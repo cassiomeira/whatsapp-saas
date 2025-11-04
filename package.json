@@ -5,7 +5,9 @@
   "license": "MIT",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx watch server/_core/index.ts",
-    "build": "cd client && pnpm install && pnpm build && cd .. && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist && cp -r client/dist dist/client",
+    "build:client": "pnpm exec vite build",
+    "build:server": "esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
+    "build": "pnpm run build:client && pnpm run build:server",
     "start": "NODE_ENV=production node dist/index.js",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
@@ -69,6 +71,7 @@
     "mysql2": "^3.15.0",
     "nanoid": "^5.1.5",
     "next-themes": "^0.4.6",
+    "openai": "^6.8.0",
     "react": "^19.1.1",
     "react-day-picker": "^9.11.1",
     "react-dom": "^19.1.1",
