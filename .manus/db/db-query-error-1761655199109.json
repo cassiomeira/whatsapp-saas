@@ -1,0 +1,8 @@
+{
+  "query": "SELECT id, content, direction, createdAt FROM messages WHERE conversationId IN (SELECT id FROM conversations WHERE contactId IN (SELECT id FROM contacts WHERE whatsappNumber = '5511987654321')) ORDER BY createdAt DESC LIMIT 5",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user hgAoCZcxKz8SNDa.root --database GTnH9rZG8rJn6S7SaQLWft --execute SELECT id, content, direction, createdAt FROM messages WHERE conversationId IN (SELECT id FROM conversations WHERE contactId IN (SELECT id FROM contacts WHERE whatsappNumber = '5511987654321')) ORDER BY createdAt DESC LIMIT 5",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1054 (42S22) at line 1: Unknown column 'direction' in 'field list'"
+  ]
+}

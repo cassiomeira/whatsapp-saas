@@ -1,0 +1,16 @@
+{
+  "query": "SELECT id, contactId, status, lastMessageAt FROM conversations WHERE contactId IN (SELECT id FROM contacts WHERE whatsappNumber = '5511987654321') ORDER BY createdAt DESC LIMIT 1",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user hgAoCZcxKz8SNDa.root --database GTnH9rZG8rJn6S7SaQLWft --execute SELECT id, contactId, status, lastMessageAt FROM conversations WHERE contactId IN (SELECT id FROM contacts WHERE whatsappNumber = '5511987654321') ORDER BY createdAt DESC LIMIT 1",
+  "rows": [
+    {
+      "id": "120001",
+      "contactId": "120001",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-28 12:39:43"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tcontactId\tstatus\tlastMessageAt\n120001\t120001\tbot_handling\t2025-10-28 12:39:43\n",
+  "stderr": "",
+  "execution_time_ms": 52
+}

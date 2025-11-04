@@ -1,0 +1,120 @@
+{
+  "query": "SELECT * FROM conversations ORDER BY createdAt DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user hgAoCZcxKz8SNDa.root --database GTnH9rZG8rJn6S7SaQLWft --execute SELECT * FROM conversations ORDER BY createdAt DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "90002",
+      "workspaceId": "1",
+      "contactId": "90002",
+      "instanceId": "90001",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-27 20:56:30",
+      "createdAt": "2025-10-27 20:56:27",
+      "updatedAt": "2025-10-27 20:56:30"
+    },
+    {
+      "id": "90001",
+      "workspaceId": "1",
+      "contactId": "90001",
+      "instanceId": "90001",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-27 20:59:09",
+      "createdAt": "2025-10-27 20:55:33",
+      "updatedAt": "2025-10-27 20:59:09"
+    },
+    {
+      "id": "60003",
+      "workspaceId": "1",
+      "contactId": "60003",
+      "instanceId": "60001",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-27 18:57:15",
+      "createdAt": "2025-10-27 18:57:11",
+      "updatedAt": "2025-10-27 18:57:14"
+    },
+    {
+      "id": "60002",
+      "workspaceId": "1",
+      "contactId": "60002",
+      "instanceId": "60001",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-27 18:56:44",
+      "createdAt": "2025-10-27 18:55:26",
+      "updatedAt": "2025-10-27 18:56:43"
+    },
+    {
+      "id": "60001",
+      "workspaceId": "1",
+      "contactId": "60001",
+      "instanceId": "60001",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-27 20:53:39",
+      "createdAt": "2025-10-27 18:51:59",
+      "updatedAt": "2025-10-27 20:53:38"
+    },
+    {
+      "id": "30004",
+      "workspaceId": "1",
+      "contactId": "30004",
+      "instanceId": "1",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-27 00:29:01",
+      "createdAt": "2025-10-27 00:28:56",
+      "updatedAt": "2025-10-27 00:29:00"
+    },
+    {
+      "id": "30003",
+      "workspaceId": "1",
+      "contactId": "30003",
+      "instanceId": "1",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-26 23:58:29",
+      "createdAt": "2025-10-26 23:58:25",
+      "updatedAt": "2025-10-26 23:58:29"
+    },
+    {
+      "id": "30002",
+      "workspaceId": "1",
+      "contactId": "30002",
+      "instanceId": "1",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-26 23:57:54",
+      "createdAt": "2025-10-26 23:57:50",
+      "updatedAt": "2025-10-26 23:57:53"
+    },
+    {
+      "id": "30001",
+      "workspaceId": "1",
+      "contactId": "30001",
+      "instanceId": "1",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-26 23:47:20",
+      "createdAt": "2025-10-26 23:47:18",
+      "updatedAt": "2025-10-26 23:47:19"
+    },
+    {
+      "id": "3",
+      "workspaceId": "1",
+      "contactId": "3",
+      "instanceId": "1",
+      "assignedToId": "NULL",
+      "status": "bot_handling",
+      "lastMessageAt": "2025-10-26 22:17:23",
+      "createdAt": "2025-10-26 22:17:18",
+      "updatedAt": "2025-10-26 22:17:23"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tworkspaceId\tcontactId\tinstanceId\tassignedToId\tstatus\tlastMessageAt\tcreatedAt\tupdatedAt\n90002\t1\t90002\t90001\tNULL\tbot_handling\t2025-10-27 20:56:30\t2025-10-27 20:56:27\t2025-10-27 20:56:30\n90001\t1\t90001\t90001\tNULL\tbot_handling\t2025-10-27 20:59:09\t2025-10-27 20:55:33\t2025-10-27 20:59:09\n60003\t1\t60003\t60001\tNULL\tbot_handling\t2025-10-27 18:57:15\t2025-10-27 18:57:11\t2025-10-27 18:57:14\n60002\t1\t60002\t60001\tNULL\tbot_handling\t2025-10-27 18:56:44\t2025-10-27 18:55:26\t2025-10-27 18:56:43\n60001\t1\t60001\t60001\tNULL\tbot_handling\t2025-10-27 20:53:39\t2025-10-27 18:51:59\t2025-10-27 20:53:38\n30004\t1\t30004\t1\tNULL\tbot_handling\t2025-10-27 00:29:01\t2025-10-27 00:28:56\t2025-10-27 00:29:00\n30003\t1\t30003\t1\tNULL\tbot_handling\t2025-10-26 23:58:29\t2025-10-26 23:58:25\t2025-10-26 23:58:29\n30002\t1\t30002\t1\tNULL\tbot_handling\t2025-10-26 23:57:54\t2025-10-26 23:57:50\t2025-10-26 23:57:53\n30001\t1\t30001\t1\tNULL\tbot_handling\t2025-10-26 23:47:20\t2025-10-26 23:47:18\t2025-10-26 23:47:19\n3\t1\t3\t1\tNULL\tbot_handling\t2025-10-26 22:17:23\t2025-10-26 22:17:18\t2025-10-26 22:17:23\n",
+  "stderr": "",
+  "execution_time_ms": 57
+}

@@ -1,0 +1,21 @@
+{
+  "query": "SELECT * FROM messages LIMIT 1",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user hgAoCZcxKz8SNDa.root --database GTnH9rZG8rJn6S7SaQLWft --execute SELECT * FROM messages LIMIT 1",
+  "rows": [
+    {
+      "id": "1",
+      "conversationId": "1",
+      "senderType": "contact",
+      "senderId": "NULL",
+      "content": "Boa noite",
+      "messageType": "text",
+      "mediaUrl": "NULL",
+      "sentAt": "2025-10-26 22:16:21",
+      "isRead": "0"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tconversationId\tsenderType\tsenderId\tcontent\tmessageType\tmediaUrl\tsentAt\tisRead\n1\t1\tcontact\tNULL\tBoa noite\ttext\tNULL\t2025-10-26 22:16:21\t0\n",
+  "stderr": "",
+  "execution_time_ms": 100
+}
