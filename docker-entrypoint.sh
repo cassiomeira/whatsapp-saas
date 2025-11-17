@@ -39,6 +39,12 @@ export VITE_APP_ID="$VITE_APP_ID_VALUE"
 export VITE_APP_TITLE="$VITE_APP_TITLE_VALUE"
 export VITE_APP_LOGO="$VITE_APP_LOGO_VALUE"
 
+echo "🔧 Variáveis efetivas:"
+echo "  NODE_ENV=$NODE_ENV"
+echo "  PORT=$PORT"
+echo "  DATABASE_URL=$DATABASE_URL"
+echo "  WHATSAPP_SESSIONS_DIR=${WHATSAPP_SESSIONS_DIR:-$(pwd)/data/whatsapp-sessions}"
+
 # Verificar se arquivo .env existe
 if [ ! -f ".env" ]; then
     echo "⚠️  Arquivo .env não encontrado!"
