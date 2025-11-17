@@ -8,6 +8,14 @@ import { createContext } from "./context";
 import { handleEvolutionWebhook } from "../webhookHandler";
 import { serveStatic, setupVite } from "./vite";
 
+process.on("uncaughtException", (error) => {
+  console.error("[Fatal] Uncaught Exception:", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[Fatal] Unhandled Rejection:", reason);
+});
+
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();
