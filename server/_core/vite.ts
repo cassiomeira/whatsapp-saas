@@ -32,7 +32,6 @@ export async function setupVite(app: Express, server: Server) {
         "index.html"
       );
 
-      // always reload the index.html file from disk incase it changes
       let template = await fs.promises.readFile(clientTemplate, "utf-8");
       template = template.replace(
         `src="/src/main.tsx"`,
@@ -48,33 +47,36 @@ export async function setupVite(app: Express, server: Server) {
 }
 
 export function serveStatic(app: Express) {
-  // O código compilado está em dist/public
-  // import.meta.dirname é server/_core, então subimos 2 níveis para chegar em dist/public
-  const distPath = path.resolve(import.meta.dirname, "../../dist/public");
-  
-  if (!fs.existsSync(distPath)) {
+  const distCandidates = [
+    path.resolve(import.meta.dirname, "../../dist/public"),
+    path.resolve(import.meta.dirname, "../dist/public"),
+    path.resolve(process.cwd(), "dist/public"),
+    path.resolve(process.cwd(), "../dist/public"),
+  ];
+
+  const distPath = distCandidates.find(candidate => fs.existsSync(candidate));
+
+  if (!distPath) {
     console.error(
-      `Could not find the build directory: ${distPath}, make sure to build the client first`
+      `Could not find the build directory. Tried:\n${distCandidates.join("\n")}`
     );
     return;
   }
 
   console.log(`Serving static files from: ${distPath}`);
-  
-  // Servir arquivos estáticos (assets, CSS, JS, etc)
-  app.use(express.static(distPath, { 
-    index: false,
-    maxAge: '1y',
-    etag: true
-  }));
 
-  // Fallback para index.html apenas para rotas que não são arquivos
+  app.use(
+    express.static(distPath, {
+      index: false,
+      maxAge: "1y",
+      etag: true,
+    })
+  );
+
   app.get("*", (req, res, next) => {
-    // Se a requisição é para um arquivo (tem extensão), retorna 404
-    if (req.path.includes('.')) {
+    if (req.path.includes(".")) {
       return next();
     }
-    // Caso contrário, serve o index.html
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
