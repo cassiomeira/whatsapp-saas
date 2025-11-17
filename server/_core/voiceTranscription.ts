@@ -28,9 +28,12 @@
 import { ENV } from "./env";
 
 export type TranscribeOptions = {
-  audioUrl: string; // URL to the audio file (e.g., S3 URL)
-  language?: string; // Optional: specify language code (e.g., "en", "es", "zh")
-  prompt?: string; // Optional: custom prompt for the transcription
+  audioUrl?: string;
+  audioBuffer?: Buffer | Uint8Array;
+  mimeType?: string;
+  fileName?: string;
+  language?: string;
+  prompt?: string;
 };
 
 // Native Whisper API segment format
@@ -90,44 +93,67 @@ export async function transcribeAudio(
       };
     }
 
-    // Step 2: Download audio from URL
-    let audioBuffer: Buffer;
-    let mimeType: string;
-    try {
-      const response = await fetch(options.audioUrl);
-      if (!response.ok) {
-        return {
-          error: "Failed to download audio file",
-          code: "INVALID_FORMAT",
-          details: `HTTP ${response.status}: ${response.statusText}`
-        };
-      }
-      
-      audioBuffer = Buffer.from(await response.arrayBuffer());
-      mimeType = response.headers.get('content-type') || 'audio/mpeg';
-      
-      // Check file size (16MB limit)
-      const sizeMB = audioBuffer.length / (1024 * 1024);
-      if (sizeMB > 16) {
-        return {
-          error: "Audio file exceeds maximum size limit",
-          code: "FILE_TOO_LARGE",
-          details: `File size is ${sizeMB.toFixed(2)}MB, maximum allowed is 16MB`
-        };
-      }
-    } catch (error) {
+    if (!options.audioUrl && !options.audioBuffer) {
       return {
-        error: "Failed to fetch audio file",
-        code: "SERVICE_ERROR",
-        details: error instanceof Error ? error.message : "Unknown error"
+        error: "No audio source provided",
+        code: "INVALID_FORMAT",
+        details: "Either audioUrl or audioBuffer must be supplied",
       };
+    }
+
+    // Step 2: obter dados de áudio
+    let audioBuffer: Buffer;
+    let mimeType: string | undefined = options.mimeType;
+
+    if (options.audioBuffer) {
+      audioBuffer = Buffer.isBuffer(options.audioBuffer)
+        ? options.audioBuffer
+        : Buffer.from(options.audioBuffer);
+    } else {
+      try {
+        const response = await fetch(options.audioUrl as string);
+        if (!response.ok) {
+          return {
+            error: "Failed to download audio file",
+            code: "INVALID_FORMAT",
+            details: `HTTP ${response.status}: ${response.statusText}`,
+          };
+        }
+
+        audioBuffer = Buffer.from(await response.arrayBuffer());
+        mimeType = response.headers.get("content-type") || undefined;
+      } catch (error) {
+        return {
+          error: "Failed to fetch audio file",
+          code: "SERVICE_ERROR",
+          details: error instanceof Error ? error.message : "Unknown error",
+        };
+      }
+    }
+
+    const sizeMB = audioBuffer.length / (1024 * 1024);
+    if (sizeMB > 16) {
+      return {
+        error: "Audio file exceeds maximum size limit",
+        code: "FILE_TOO_LARGE",
+        details: `File size is ${sizeMB.toFixed(2)}MB, maximum allowed is 16MB`,
+      };
+    }
+
+    if (!mimeType) {
+      mimeType = "audio/mpeg";
+    }
+
+    if (mimeType.includes(";")) {
+      mimeType = mimeType.split(";")[0].trim();
     }
 
     // Step 3: Create FormData for multipart upload to Whisper API
     const formData = new FormData();
-    
-    // Create a Blob from the buffer and append to form
-    const filename = `audio.${getFileExtension(mimeType)}`;
+
+    const filename =
+      options.fileName ||
+      `audio.${getFileExtension(mimeType)}`;
     const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
     formData.append("file", audioBlob, filename);
     

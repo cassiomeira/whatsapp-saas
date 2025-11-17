@@ -1,0 +1,11 @@
+version: "3"
+agent:
+  authtoken: 35NUU2CczUAgHQqB9a7bcfFF4VS_2yVyWgPfHwVzryRdL3iHb
+tunnels:
+  whatsapp:
+    addr: app:3000
+    proto: http
+    schemes:
+      - https
+    inspect: false
+

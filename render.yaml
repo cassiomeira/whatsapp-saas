@@ -1,47 +1,7 @@
-services:
-  # Web Service (Backend + Frontend)
-  - type: web
-    name: whatsapp-saas
-    runtime: node
-    plan: starter
-    buildCommand: pnpm install && pnpm build
-    startCommand: pnpm start
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 3000
-      - key: DATABASE_URL
-        sync: false
-      - key: JWT_SECRET
-        generateValue: true
-      - key: VITE_APP_ID
-        sync: false
-      - key: VITE_APP_TITLE
-        value: WhatsApp SaaS Platform
-      - key: VITE_APP_LOGO
-        value: https://via.placeholder.com/150
-      - key: OAUTH_SERVER_URL
-        sync: false
-      - key: VITE_OAUTH_PORTAL_URL
-        sync: false
-      - key: OWNER_OPEN_ID
-        sync: false
-      - key: OWNER_NAME
-        sync: false
-      - key: BUILT_IN_FORGE_API_URL
-        sync: false
-      - key: BUILT_IN_FORGE_API_KEY
-        sync: false
-      - key: VITE_ANALYTICS_ENDPOINT
-        sync: false
-      - key: VITE_ANALYTICS_WEBSITE_ID
-        sync: false
-
-databases:
-  # MySQL Database
-  - name: whatsapp-saas-db
-    databaseName: whatsapp_saas
-    user: whatsapp_saas_user
-    plan: starter
-
+   services:
+     - type: web
+       name: whatsapp-saas
+       env: docker
+       dockerComposePath: ./docker-compose.prod.yml
+       plan: starter
+       autoDeploy: true

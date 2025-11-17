@@ -1,7 +1,83 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import type { InsertWorkspace, User } from "../../drizzle/schema";
-import { sdk } from "./sdk";
+import type { User } from "../../drizzle/schema";
 import * as db from "../db";
+import { extractSupabaseToken, getSupabaseUser, type SupabaseUser } from "./supabase";
+
+async function ensureWorkspaceForUser(user: User, supabaseUser: SupabaseUser): Promise<User> {
+  if (user.workspaceId) {
+    return user;
+  }
+
+  const displayName =
+    (supabaseUser.user_metadata?.workspace_name as string | undefined) ||
+    (supabaseUser.user_metadata?.company as string | undefined) ||
+    (supabaseUser.user_metadata?.organization as string | undefined) ||
+    (supabaseUser.email ? `Workspace de ${supabaseUser.email}` : `Workspace ${supabaseUser.id.slice(0, 8)}`);
+
+  const workspaceId = await db.createWorkspace({
+    name: displayName,
+    ownerId: user.id,
+  });
+
+  await db.upsertUser({
+    openId: user.openId,
+    workspaceId,
+    workspaceRole: "owner",
+    status: "approved",
+  });
+
+  const existingBotConfig = await db.getBotConfigByWorkspace(workspaceId);
+  if (!existingBotConfig) {
+    await db.upsertBotConfig({
+      workspaceId,
+      masterPrompt: "Você é um assistente de atendimento profissional e prestativo.",
+      transferRules: [],
+      isActive: true,
+    });
+  }
+
+  const refreshedUser = await db.getUserByOpenId(user.openId);
+  return refreshedUser ?? user;
+}
+
+async function syncSupabaseUser(supabaseUser: SupabaseUser): Promise<User | null> {
+  const existingUser = await db.getUserByOpenId(supabaseUser.id);
+  const isNewUser = !existingUser;
+
+  const nameFromMetadata =
+    (supabaseUser.user_metadata?.full_name as string | undefined) ||
+    (supabaseUser.user_metadata?.name as string | undefined) ||
+    (supabaseUser.user_metadata?.fullName as string | undefined) ||
+    supabaseUser.email ||
+    supabaseUser.phone ||
+    supabaseUser.id;
+
+  let role = existingUser?.role;
+  if (!role) {
+    const userCount = await db.getUsersCount();
+    role = userCount === 0 ? "admin" : "user";
+  }
+
+  await db.upsertUser({
+    openId: supabaseUser.id,
+    name: nameFromMetadata,
+    email: supabaseUser.email ?? null,
+    loginMethod: (supabaseUser.app_metadata?.provider as string | undefined) ?? "supabase",
+    status: "approved",
+    role,
+  });
+
+  let platformUser = await db.getUserByOpenId(supabaseUser.id);
+  if (!platformUser) {
+    return null;
+  }
+
+  if (isNewUser || !platformUser.workspaceId) {
+    platformUser = await ensureWorkspaceForUser(platformUser, supabaseUser);
+  }
+
+  return platformUser;
+}
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
@@ -14,43 +90,17 @@ export async function createContext(
 ): Promise<TrpcContext> {
   let user: User | null = null;
 
-  if (process.env.NODE_ENV === "development") {
-    const workspaceId = 1;
-    const simulatedUser: User = {
-      id: 1,
-      openId: "local-user",
-      name: "Administrador Local",
-      email: "admin@local.com",
-      loginMethod: "local",
-      role: "admin",
-      status: "approved",
-      workspaceId,
-      workspaceRole: "owner",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      lastSignedIn: new Date(),
-    };
-    user = simulatedUser;
-
-    // Verificar se o workspace padrão existe, se não, criar.
-    const existingWorkspace = await db.getWorkspaceById(workspaceId);
-    if (!existingWorkspace) {
-      await db.createWorkspace({
-        id: workspaceId,
-        name: "Workspace Padrão Local",
-        ownerId: simulatedUser.id,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-      console.log(`[DB] Workspace padrão para o usuário ${simulatedUser.name} criado com sucesso.`);
+  try {
+    const accessToken = extractSupabaseToken(opts.req);
+    if (accessToken) {
+      const supabaseUser = await getSupabaseUser(accessToken);
+      if (supabaseUser) {
+        user = await syncSupabaseUser(supabaseUser);
+      }
     }
-  } else {
-    try {
-      user = await sdk.authenticateRequest(opts.req);
-    } catch (error) {
-      // Authentication is optional for public procedures.
-      user = null;
-    }
+  } catch (error) {
+    console.error("[Auth] Failed to authenticate Supabase user:", error);
+    user = null;
   }
 
   return {

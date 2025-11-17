@@ -1,0 +1,41 @@
+services:
+  # Aplicação WhatsApp SaaS (usando Baileys via whatsapp-web.js)
+  app:
+    build: .
+    container_name: whatsapp-saas
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    env_file:
+      - .env
+    volumes:
+      - ./local.db:/app/local.db
+      - ./local-backup.db:/app/local-backup.db
+      - ./data:/app/data
+    restart: unless-stopped
+    networks:
+      - whatsapp-network
+
+  # Ngrok - Desabilitado (usuário tem ngrok local instalado)
+  # Para usar ngrok local: ngrok http 3000
+  # ngrok:
+  #   image: ngrok/ngrok:latest
+  #   container_name: whatsapp-ngrok
+  #   command: start --all --config /etc/ngrok.yml
+  #   ports:
+  #     - "4040:4040"
+  #   volumes:
+  #     - ./ngrok.yml:/etc/ngrok.yml:ro
+  #   depends_on:
+  #     app:
+  #       condition: service_started
+  #   networks:
+  #     - whatsapp-network
+  #   restart: unless-stopped
+
+networks:
+  whatsapp-network:
+    driver: bridge
+

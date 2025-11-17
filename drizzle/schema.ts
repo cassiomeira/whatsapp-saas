@@ -169,6 +169,39 @@ export type Campaign = typeof campaigns.$inferSelect;
 export type InsertCampaign = typeof campaigns.$inferInsert;
 
 /**
+ * Grupos/listas de disparo de campanhas
+ */
+export const campaignAudiences = sqliteTable("campaign_audiences", {
+  id: int("id").primaryKey(),
+  workspaceId: int("workspaceId").notNull(),
+  name: text("name").notNull(),
+  createdAt: int("createdAt", { mode: "timestamp" }).default(sql`(strftime('%s', 'now'))`).notNull(),
+  updatedAt: int("updatedAt", { mode: "timestamp" }).default(sql`(strftime('%s', 'now'))`).notNull(),
+});
+
+export type CampaignAudience = typeof campaignAudiences.$inferSelect;
+export type InsertCampaignAudience = typeof campaignAudiences.$inferInsert;
+
+export const campaignAudienceMembers = sqliteTable(
+  "campaign_audience_members",
+  {
+    id: int("id").primaryKey(),
+    audienceId: int("audienceId").notNull(),
+    contactId: int("contactId").notNull(),
+    createdAt: int("createdAt", { mode: "timestamp" }).default(sql`(strftime('%s', 'now'))`).notNull(),
+  },
+  table => ({
+    audienceContactUnique: uniqueIndex("campaign_audience_members_unique").on(
+      table.audienceId,
+      table.contactId
+    ),
+  })
+);
+
+export type CampaignAudienceMember = typeof campaignAudienceMembers.$inferSelect;
+export type InsertCampaignAudienceMember = typeof campaignAudienceMembers.$inferInsert;
+
+/**
  * Uploads de catálogo de produtos
  */
 export const productUploads = sqliteTable("product_uploads", {

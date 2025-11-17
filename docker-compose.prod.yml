@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # Aplicação WhatsApp SaaS - PRODUÇÃO (Docker)
+  # Dev local roda na porta 3000, produção Docker na porta 3001
+  app-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-saas-prod
+    ports:
+      - "3001:3000"  # Porta 3001 no host -> 3000 no container (dev local usa 3000)
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    env_file:
+      - .env.production
+    volumes:
+      - ./production.db:/app/production.db
+      - ./production-backup.db:/app/production-backup.db
+      - ./data-prod:/app/data
+    restart: unless-stopped
+    networks:
+      - whatsapp-prod-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health", "||", "exit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  whatsapp-prod-network:
+    driver: bridge
+

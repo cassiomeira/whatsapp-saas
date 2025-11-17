@@ -1,4 +1,4 @@
-import { eq, and, desc, like, or, sql } from "drizzle-orm";
+import { eq, and, desc, like, or, sql, asc, inArray } from "drizzle-orm";
 
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
@@ -25,6 +25,9 @@ import {
   InsertProduct,
   productUploads,
   InsertProductUpload,
+  campaignAudiences,
+  InsertCampaignAudience,
+  campaignAudienceMembers,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -67,7 +70,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       const value = user[field];
       if (value === undefined) return;
       const normalized = value ?? null;
-      values[field] = normalized;
+      (values as Record<string, unknown>)[field] = normalized;
       updateSet[field] = normalized;
     };
 
@@ -84,6 +87,11 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       values.role = 'admin';
       updateSet.role = 'admin';
     }
+    if (user.status !== undefined) {
+      values.status = user.status;
+      updateSet.status = user.status;
+    }
+
     if (user.workspaceId !== undefined) {
       values.workspaceId = user.workspaceId;
       updateSet.workspaceId = user.workspaceId;
@@ -121,6 +129,17 @@ export async function getUserByOpenId(openId: string) {
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
 
   return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUsersCount(): Promise<number> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot count users: database not available");
+    return 0;
+  }
+
+  const result = await db.select({ count: sql<number>`count(*)` }).from(users);
+  return result?.[0]?.count ?? 0;
 }
 
 // Workspace functions
@@ -210,6 +229,18 @@ export async function getWhatsappInstanceByKey(instanceKey: string) {
   return result[0];
 }
 
+export async function getAllConnectedWhatsappInstances() {
+  const db = await getDb();
+  if (!db) return [];
+  
+  return db.select().from(whatsappInstances).where(
+    or(
+      eq(whatsappInstances.status, "connected"),
+      eq(whatsappInstances.status, "connecting")
+    )
+  );
+}
+
 export async function updateWhatsappInstanceStatus(id: number, status: string, phoneNumber?: string, qrCode?: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -243,9 +274,15 @@ export async function getContactsByWorkspace(workspaceId: number) {
   const db = await getDb();
   if (!db) return [];
   
-  return db.select().from(contacts)
+  const results = await db.select().from(contacts)
     .where(eq(contacts.workspaceId, workspaceId))
     .orderBy(desc(contacts.updatedAt));
+
+  return results.map(contact =>
+    contact.kanbanStatus === "negociating"
+      ? { ...contact, kanbanStatus: "negotiating" }
+      : contact
+  );
 }
 
 export async function getContactByNumber(workspaceId: number, whatsappNumber: string) {
@@ -262,12 +299,37 @@ export async function getContactByNumber(workspaceId: number, whatsappNumber: st
   return result[0];
 }
 
+export async function getContactsByIds(workspaceId: number, contactIds: number[]) {
+  if (!contactIds.length) return [];
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(contacts)
+    .where(
+      and(
+        eq(contacts.workspaceId, workspaceId),
+        inArray(contacts.id, contactIds)
+      )
+    );
+}
+
 export async function updateContactKanbanStatus(id: number, status: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   
   await db.update(contacts)
-    .set({ kanbanStatus: status, updatedAt: new Date() })
+    .set({ kanbanStatus: status === "negociating" ? "negotiating" : status, updatedAt: new Date() })
+    .where(eq(contacts.id, id));
+}
+
+export async function updateContactName(id: number, name: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.update(contacts)
+    .set({ name, updatedAt: new Date() })
     .where(eq(contacts.id, id));
 }
 
@@ -278,6 +340,25 @@ export async function createConversation(conversation: InsertConversation) {
   
   const result = await db.insert(conversations).values(conversation);
   return Number((result as any).lastInsertRowid ?? 0);
+}
+
+export async function getConversationByContact(workspaceId: number, contactId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.workspaceId, workspaceId),
+        eq(conversations.contactId, contactId)
+      )
+    )
+    .orderBy(desc(conversations.updatedAt))
+    .limit(1);
+
+  return result[0];
 }
 
 export async function getConversationsByWorkspace(workspaceId: number, status?: string) {
@@ -393,6 +474,301 @@ export async function getCampaignsByWorkspace(workspaceId: number) {
     .orderBy(desc(campaigns.createdAt));
 }
 
+export async function createCampaign(campaign: InsertCampaign) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(campaigns).values(campaign);
+  return Number((result as any).lastInsertRowid ?? 0);
+}
+
+export async function updateCampaign(
+  id: number,
+  data: Partial<Pick<InsertCampaign, "name" | "message" | "mediaUrl" | "mediaType" | "status" | "totalContacts" | "sentCount" | "scheduledAt">>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db
+    .update(campaigns)
+    .set({
+      ...data,
+      updatedAt: new Date(),
+    })
+    .where(eq(campaigns.id, id));
+}
+
+export async function getCampaignById(workspaceId: number, id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(campaigns)
+    .where(
+      and(
+        eq(campaigns.workspaceId, workspaceId),
+        eq(campaigns.id, id)
+      )
+    )
+    .limit(1);
+
+  return result[0];
+}
+
+// Campaign audience functions
+export async function getCampaignAudiences(workspaceId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const audiences = await db
+    .select()
+    .from(campaignAudiences)
+    .where(eq(campaignAudiences.workspaceId, workspaceId))
+    .orderBy(desc(campaignAudiences.updatedAt));
+
+  if (!audiences.length) return [];
+
+  const audienceIds = audiences.map(audience => audience.id);
+  const counts = await db
+    .select({
+      audienceId: campaignAudienceMembers.audienceId,
+      count: sql<number>`count(*)`,
+    })
+    .from(campaignAudienceMembers)
+    .where(inArray(campaignAudienceMembers.audienceId, audienceIds))
+    .groupBy(campaignAudienceMembers.audienceId);
+
+  const countMap = new Map<number, number>();
+  counts.forEach(row => countMap.set(row.audienceId, row.count));
+
+  return audiences.map(audience => ({
+    ...audience,
+    contactCount: countMap.get(audience.id) ?? 0,
+  }));
+}
+
+export async function getCampaignAudienceById(workspaceId: number, audienceId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(campaignAudiences)
+    .where(
+      and(
+        eq(campaignAudiences.workspaceId, workspaceId),
+        eq(campaignAudiences.id, audienceId)
+      )
+    )
+    .limit(1);
+
+  return result[0];
+}
+
+export async function createCampaignAudience(workspaceId: number, name: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(campaignAudiences).values({
+    workspaceId,
+    name,
+  } satisfies InsertCampaignAudience);
+
+  return Number((result as any).lastInsertRowid ?? 0);
+}
+
+export async function updateCampaignAudienceName(workspaceId: number, audienceId: number, name: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db
+    .update(campaignAudiences)
+    .set({
+      name,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(campaignAudiences.id, audienceId),
+        eq(campaignAudiences.workspaceId, workspaceId)
+      )
+    );
+}
+
+export async function deleteCampaignAudience(workspaceId: number, audienceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db
+    .delete(campaignAudienceMembers)
+    .where(eq(campaignAudienceMembers.audienceId, audienceId));
+
+  await db
+    .delete(campaignAudiences)
+    .where(
+      and(
+        eq(campaignAudiences.id, audienceId),
+        eq(campaignAudiences.workspaceId, workspaceId)
+      )
+    );
+}
+
+export async function replaceCampaignAudienceMembers(audienceId: number, contactIds: number[]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db
+    .delete(campaignAudienceMembers)
+    .where(eq(campaignAudienceMembers.audienceId, audienceId));
+
+  if (contactIds.length === 0) {
+    return;
+  }
+
+  const rows = contactIds.map(contactId => ({
+    audienceId,
+    contactId,
+  }));
+
+  await db
+    .insert(campaignAudienceMembers)
+    .values(rows)
+    .onConflictDoNothing({
+      target: [
+        campaignAudienceMembers.audienceId,
+        campaignAudienceMembers.contactId,
+      ],
+    });
+}
+
+export async function appendCampaignAudienceMembers(audienceId: number, contactIds: number[]) {
+  if (!contactIds.length) return;
+
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const rows = contactIds.map(contactId => ({
+    audienceId,
+    contactId,
+  }));
+
+  await db
+    .insert(campaignAudienceMembers)
+    .values(rows)
+    .onConflictDoNothing({
+      target: [
+        campaignAudienceMembers.audienceId,
+        campaignAudienceMembers.contactId,
+      ],
+    });
+}
+
+export async function getContactsByAudienceIds(workspaceId: number, audienceIds: number[]) {
+  if (!audienceIds.length) return [];
+  const db = await getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      contactId: campaignAudienceMembers.contactId,
+    })
+    .from(campaignAudienceMembers)
+    .innerJoin(
+      campaignAudiences,
+      eq(campaignAudienceMembers.audienceId, campaignAudiences.id)
+    )
+    .where(
+      and(
+        eq(campaignAudiences.workspaceId, workspaceId),
+        inArray(campaignAudienceMembers.audienceId, audienceIds)
+      )
+    );
+
+  if (!rows.length) return [];
+
+  const uniqueContactIds = Array.from(new Set(rows.map(row => row.contactId)));
+  return getContactsByIds(workspaceId, uniqueContactIds);
+}
+
+export async function getCampaignAudienceMembers(workspaceId: number, audienceId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select({
+      contactId: campaignAudienceMembers.contactId,
+      whatsappNumber: contacts.whatsappNumber,
+      name: contacts.name,
+    })
+    .from(campaignAudienceMembers)
+    .innerJoin(
+      campaignAudiences,
+      eq(campaignAudienceMembers.audienceId, campaignAudiences.id)
+    )
+    .innerJoin(
+      contacts,
+      eq(campaignAudienceMembers.contactId, contacts.id)
+    )
+    .where(
+      and(
+        eq(campaignAudiences.workspaceId, workspaceId),
+        eq(campaignAudienceMembers.audienceId, audienceId)
+      )
+    )
+    .orderBy(asc(contacts.whatsappNumber));
+}
+
+export async function removeCampaignAudienceMember(audienceId: number, contactId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db
+    .delete(campaignAudienceMembers)
+    .where(
+      and(
+        eq(campaignAudienceMembers.audienceId, audienceId),
+        eq(campaignAudienceMembers.contactId, contactId)
+      )
+    );
+}
+
+export async function updateCampaignDetails(
+  workspaceId: number,
+  campaignId: number,
+  data: Partial<Pick<InsertCampaign, "name" | "message">>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db
+    .update(campaigns)
+    .set({
+      ...data,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(campaigns.id, campaignId),
+        eq(campaigns.workspaceId, workspaceId)
+      )
+    );
+}
+
+export async function deleteCampaign(workspaceId: number, campaignId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db
+    .delete(campaigns)
+    .where(
+      and(
+        eq(campaigns.id, campaignId),
+        eq(campaigns.workspaceId, workspaceId)
+      )
+    );
+}
+
 // Product catalog functions
 export async function createProductUpload(upload: InsertProductUpload) {
   const db = await getDb();
@@ -503,7 +879,10 @@ export async function searchProducts(workspaceId: number, query: string, limit =
         )
       )
     )
-    .orderBy(desc(products.updatedAt))
+    .orderBy(
+      asc(products.price),
+      asc(products.name)
+    )
     .limit(limit);
 }
 

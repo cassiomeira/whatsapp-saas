@@ -8,7 +8,7 @@ import { processIncomingMessage } from "./aiService";
 import { getEvolutionService } from "./evolutionService";
 import { TRPCError } from "@trpc/server";
 import { parse } from "csv-parse/sync";
-import type { InsertProduct } from "../drizzle/schema";
+import type { InsertProduct, Contact } from "../drizzle/schema";
 
 const MAX_UPLOAD_ERRORS = 10;
 
@@ -55,6 +55,52 @@ function parseQuantity(value: unknown): number {
   const quantity = Number.parseInt(cleaned, 10);
   if (Number.isNaN(quantity)) return 0;
   return Math.max(quantity, 0);
+}
+
+function normalizePhoneNumber(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const digits = raw.replace(/\D+/g, "");
+  if (!digits) return null;
+  const trimmed = digits.replace(/^0+/, "");
+  if (trimmed.length < 8) return null;
+  return trimmed;
+}
+
+function extractUniquePhoneNumbers(values: string[]): string[] {
+  const unique = new Set<string>();
+  for (const item of values) {
+    const normalized = normalizePhoneNumber(item);
+    if (normalized) {
+      unique.add(normalized);
+    }
+  }
+  return Array.from(unique);
+}
+
+async function ensureContactsForNumbers(workspaceId: number, numbers: string[]): Promise<Contact[]> {
+  const normalizedNumbers = extractUniquePhoneNumbers(numbers);
+  if (!normalizedNumbers.length) return [];
+
+  const contactsMap = new Map<number, Contact>();
+
+  for (const number of normalizedNumbers) {
+    let contact = await db.getContactByNumber(workspaceId, number);
+    if (!contact) {
+      const contactId = await db.createContact({
+        workspaceId,
+        whatsappNumber: number,
+        name: null,
+      });
+      if (contactId) {
+        contact = await db.getContactByNumber(workspaceId, number);
+      }
+    }
+    if (contact) {
+      contactsMap.set(contact.id, contact);
+    }
+  }
+
+  return Array.from(contactsMap.values());
 }
 
 export const appRouter = router({
@@ -251,31 +297,33 @@ export const appRouter = router({
             const instance = instances.find(i => i.id === conversation.instanceId);
             
             if (instance && instance.instanceKey) {
-              // Buscar configurações Evolution API
-              const workspace = await db.getWorkspaceById(ctx.user.workspaceId!);
-              const metadata = workspace?.metadata as any;
-              
-              if (metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
-                try {
-                  const { getEvolutionService } = await import("./evolutionService");
-                  const evolution = getEvolutionService({
-                    apiUrl: metadata.evolutionApiUrl,
-                    apiKey: metadata.evolutionApiKey,
-                  });
-                  
-                  // Enviar mensagem via WhatsApp
-                  await evolution.sendTextMessage(
-                    instance.instanceKey,
-                    contact.whatsappNumber,
-                    input.content
-                  );
-                  
-                  console.log(`[Messages] Mensagem do atendente enviada para ${contact.whatsappNumber}`);
-                } catch (error) {
-                  console.error(`[Messages] Erro ao enviar mensagem via WhatsApp:`, error);
-                  // Não lança erro para não bloquear o salvamento
-                }
+              // Enviar mensagem via WhatsApp
+              try {
+                console.log(`[Messages] Attempting to send message from app:`, {
+                  instanceKey: instance.instanceKey,
+                  whatsappNumber: contact.whatsappNumber,
+                  content: input.content.substring(0, 50),
+                });
+                
+                const { sendTextMessage } = await import("./whatsappService");
+                await sendTextMessage(
+                  instance.instanceKey,
+                  contact.whatsappNumber,
+                  input.content
+                );
+                
+                console.log(`[Messages] Mensagem do atendente enviada com sucesso para ${contact.whatsappNumber}`);
+              } catch (error: any) {
+                console.error(`[Messages] Erro ao enviar mensagem via WhatsApp:`, error);
+                console.error(`[Messages] Error stack:`, error?.stack);
+                // Não lança erro para não bloquear o salvamento
               }
+            } else {
+              console.error(`[Messages] Instance not found or invalid:`, {
+                instanceId: conversation.instanceId,
+                instance: instance ? "found" : "not found",
+                instanceKey: instance?.instanceKey || "missing",
+              });
             }
           }
         }
@@ -546,44 +594,26 @@ export const appRouter = router({
             throw new Error("Workspace not found");
           }
           
-          const metadata = workspace.metadata as any;
-          if (!metadata?.evolutionApiUrl || !metadata?.evolutionApiKey) {
-            throw new Error("Evolution API não configurada. Configure em Settings > Evolution API");
-          }
-          
-          const evolution = getEvolutionService({
-            apiUrl: metadata.evolutionApiUrl,
-            apiKey: metadata.evolutionApiKey,
-          });
-          
           const instanceKey = `ws${ctx.user.workspaceId}_${Date.now()}`;
           
-          // Montar URL do webhook
-          const webhookUrl = metadata.webhookUrl || `${process.env.VITE_APP_URL || 'http://localhost:3000'}/api/webhook/evolution`;
+          // Importar serviço WhatsApp (whatsapp-web.js)
+          const { createWhatsAppInstance } = await import("./whatsappService");
           
-          // Criar instância na Evolution API com webhook configurado
-          const result = await evolution.createInstance(instanceKey, webhookUrl);
-          
-          // Configurar webhook (garantir que está configurado)
-          try {
-            await evolution.setWebhook(instanceKey, webhookUrl);
-            console.log(`[WhatsApp] Webhook configured for ${instanceKey}: ${webhookUrl}`);
-          } catch (error) {
-            console.error(`[WhatsApp] Failed to set webhook for ${instanceKey}:`, error);
-          }
+          // Criar instância WhatsApp
+          const result = await createWhatsAppInstance(instanceKey);
           
           // Salvar no banco
           const instanceId = await db.createWhatsappInstance({
             workspaceId: ctx.user.workspaceId,
             name: input.name,
             instanceKey,
-            status: "connecting",
+            status: result.instance.status,
             qrCode: result.qrcode?.base64,
           });
           
           return {
             instanceId,
-            qrCode: result.qrcode?.base64,
+            qrCode: result.qrcode?.base64 || null,
           };
         } catch (error: any) {
           throw new TRPCError({
@@ -611,8 +641,8 @@ export const appRouter = router({
             throw new Error("Instance not found");
           }
           
-          const evolution = getEvolutionService();
-          const qrData = await evolution.getQRCode(instance.instanceKey);
+          const { getQRCode } = await import("./whatsappService");
+          const qrData = await getQRCode(instance.instanceKey);
           
           // Atualizar QR no banco
           await db.updateWhatsappInstanceStatus(instance.id, "connecting", undefined, qrData.base64);
@@ -644,35 +674,14 @@ export const appRouter = router({
             throw new Error("Instance not found");
           }
           
-          // Pegar configurações do workspace
-          const workspace = await db.getWorkspaceById(ctx.user.workspaceId);
-          if (!workspace) {
-            throw new Error("Workspace not found");
-          }
-          
-          const metadata = workspace.metadata as any;
-          if (!metadata?.evolutionApiUrl || !metadata?.evolutionApiKey) {
-            throw new Error("Evolution API não configurada");
-          }
-          
-          const evolution = getEvolutionService({
-            apiUrl: metadata.evolutionApiUrl,
-            apiKey: metadata.evolutionApiKey,
-          });
-          const status = await evolution.getInstanceStatus(instance.instanceKey);
+          const { getInstanceStatus } = await import("./whatsappService");
+          const status = await getInstanceStatus(instance.instanceKey);
           
           // Atualizar status no banco
-          const statusMap: Record<string, string> = {
-            open: "connected",
-            close: "disconnected",
-            connecting: "connecting",
-          };
-          
-          const dbStatus = statusMap[status.status] || "disconnected";
-          await db.updateWhatsappInstanceStatus(instance.id, dbStatus);
+          await db.updateWhatsappInstanceStatus(instance.id, status.status, status.phoneNumber);
           
           return {
-            status: dbStatus,
+            status: status.status,
             phoneNumber: status.phoneNumber,
           };
         } catch (error: any) {
@@ -701,9 +710,8 @@ export const appRouter = router({
             throw new Error("Instance not found");
           }
           
-          const evolution = getEvolutionService();
-          await evolution.logoutInstance(instance.instanceKey);
-          await db.updateWhatsappInstanceStatus(instance.id, "disconnected");
+          const { disconnectInstance } = await import("./whatsappService");
+          await disconnectInstance(instance.instanceKey);
           
           return { success: true };
         } catch (error: any) {
@@ -732,51 +740,19 @@ export const appRouter = router({
             throw new Error("Instance not found");
           }
           
-          // Pegar configurações do workspace
-          const workspace = await db.getWorkspaceById(ctx.user.workspaceId);
-          if (!workspace) {
-            throw new Error("Workspace not found");
-          }
-          
-          const metadata = workspace.metadata as any;
-          if (!metadata?.evolutionApiUrl || !metadata?.evolutionApiKey) {
-            throw new Error("Evolution API não configurada. Configure em Settings > Evolution API");
-          }
-          
-          const evolution = getEvolutionService({
-            apiUrl: metadata.evolutionApiUrl,
-            apiKey: metadata.evolutionApiKey,
-          });
-          
-          // Primeiro desconectar se estiver conectado
-          try {
-            await evolution.logoutInstance(instance.instanceKey);
-          } catch (error) {
-            // Ignorar erro se já estiver desconectado
-          }
-          
-          // Pegar novo QR Code
-          const qrData = await evolution.getQRCode(instance.instanceKey);
-          
-          // Configurar webhook novamente (pode ter sido perdido após desconexão)
-          const webhookUrl = metadata.webhookUrl || `${process.env.VITE_APP_URL || 'http://localhost:3000'}/api/webhook/evolution`;
-          try {
-            await evolution.setWebhook(instance.instanceKey, webhookUrl);
-            console.log(`[WhatsApp] Webhook reconfigured for ${instance.instanceKey}: ${webhookUrl}`);
-          } catch (error) {
-            console.error(`[WhatsApp] Failed to reconfigure webhook for ${instance.instanceKey}:`, error);
-          }
+          const { reconnectInstance } = await import("./whatsappService");
+          const result = await reconnectInstance(instance.instanceKey);
           
           // Atualizar status no banco
           await db.updateWhatsappInstanceStatus(
             instance.id,
             "connecting",
             undefined, // phoneNumber
-            qrData.base64 // qrCode
+            result.qrCode || undefined // qrCode
           );
           
           return {
-            qrCode: qrData.base64,
+            qrCode: result.qrCode,
           };
         } catch (error: any) {
           throw new TRPCError({
@@ -795,32 +771,19 @@ export const appRouter = router({
       const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
       
       // Tentar atualizar status de cada instância
-      const workspace = await db.getWorkspaceById(ctx.user.workspaceId);
-      if (workspace?.metadata) {
-        const metadata = workspace.metadata as any;
-        if (metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
-          const evolution = getEvolutionService({
-            apiUrl: metadata.evolutionApiUrl,
-            apiKey: metadata.evolutionApiKey,
-          });
-          
-          // Atualizar status de cada instância
-          for (const instance of instances) {
-            if (!instance.instanceKey) continue;
-            try {
-              const status = await evolution.getInstanceStatus(instance.instanceKey);
-              const normalizedStatus = status.status === 'open' ? 'connected' : 
-                                      status.status === 'close' ? 'disconnected' : 
-                                      status.status as any;
-              if (normalizedStatus !== instance.status) {
-                await db.updateWhatsappInstanceStatus(instance.id, normalizedStatus, status.phoneNumber || undefined);
-                instance.status = normalizedStatus;
-                instance.phoneNumber = status.phoneNumber || null;
-              }
-            } catch (error) {
-              // Ignorar erros de status
-            }
+      const { getInstanceStatus } = await import("./whatsappService");
+      
+      for (const instance of instances) {
+        if (!instance.instanceKey) continue;
+        try {
+          const status = await getInstanceStatus(instance.instanceKey);
+          if (status.status !== instance.status) {
+            await db.updateWhatsappInstanceStatus(instance.id, status.status, status.phoneNumber);
+            instance.status = status.status as any;
+            instance.phoneNumber = status.phoneNumber || null;
           }
+        } catch (error) {
+          // Ignorar erros de status
         }
       }
       
@@ -845,23 +808,14 @@ export const appRouter = router({
             throw new Error("Instance not found");
           }
           
-          // Tentar desconectar da Evolution API antes de deletar
+          // Desconectar antes de deletar
           if (instance.instanceKey) {
             try {
-              const workspace = await db.getWorkspaceById(ctx.user.workspaceId);
-              if (workspace?.metadata) {
-                const metadata = workspace.metadata as any;
-                if (metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
-                  const evolution = getEvolutionService({
-                    apiUrl: metadata.evolutionApiUrl,
-                    apiKey: metadata.evolutionApiKey,
-                  });
-                  await evolution.deleteInstance(instance.instanceKey);
-                }
-              }
+              const { disconnectInstance } = await import("./whatsappService");
+              await disconnectInstance(instance.instanceKey);
             } catch (error) {
-              // Ignorar erro se não conseguir deletar da Evolution API
-              console.error("[WhatsApp] Error deleting from Evolution API:", error);
+              // Ignorar erro se não conseguir desconectar
+              console.warn("[WhatsApp] Error disconnecting instance before delete:", error);
             }
           }
           
@@ -897,6 +851,341 @@ export const appRouter = router({
       }
       return db.getCampaignsByWorkspace(ctx.user.workspaceId);
     }),
+
+    createAndSend: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1),
+        message: z.string().min(1),
+        contactIds: z.array(z.number()).optional(),
+        audienceIds: z.array(z.number()).optional(),
+        manualNumbers: z.array(z.string()).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        const workspaceId = ctx.user.workspaceId;
+        const workspace = await db.getWorkspaceById(workspaceId);
+        if (!workspace) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Workspace não encontrado" });
+        }
+
+        const metadata = workspace.metadata as any;
+        if (!metadata?.evolutionApiUrl || !metadata?.evolutionApiKey) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Configure a Evolution API em Configurações > Evolution API antes de enviar campanhas.",
+          });
+        }
+
+        const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
+        if (!instances.length) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Nenhuma instância do WhatsApp configurada. Crie e conecte uma instância antes de enviar campanhas.",
+          });
+        }
+
+        const activeInstance = instances.find(instance => instance.status === "connected" && instance.instanceKey) ??
+          instances.find(instance => instance.instanceKey);
+
+        if (!activeInstance || !activeInstance.instanceKey) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Nenhuma instância conectada disponível para enviar a campanha.",
+          });
+        }
+
+        const contactMap = new Map<number, Contact>();
+
+        const requestedContactIds = Array.from(new Set(input.contactIds ?? []));
+        if (requestedContactIds.length) {
+          const contactsById = await db.getContactsByIds(workspaceId, requestedContactIds);
+          contactsById.forEach(contact => {
+            if (contact.whatsappNumber) {
+              contactMap.set(contact.id, contact);
+            }
+          });
+        }
+
+        const requestedAudienceIds = Array.from(new Set(input.audienceIds ?? []));
+        if (requestedAudienceIds.length) {
+          const contactsByAudiences = await db.getContactsByAudienceIds(workspaceId, requestedAudienceIds);
+          contactsByAudiences.forEach(contact => {
+            if (contact.whatsappNumber) {
+              contactMap.set(contact.id, contact);
+            }
+          });
+        }
+
+        if (input.manualNumbers?.length) {
+          const contactsFromNumbers = await ensureContactsForNumbers(workspaceId, input.manualNumbers);
+          contactsFromNumbers.forEach(contact => {
+            if (contact.whatsappNumber) {
+              contactMap.set(contact.id, contact);
+            }
+          });
+        }
+
+        if (contactMap.size === 0) {
+          const allContacts = await db.getContactsByWorkspace(workspaceId);
+          allContacts.forEach(contact => {
+            if (contact.whatsappNumber) {
+              contactMap.set(contact.id, contact);
+            }
+          });
+        }
+
+        const campaignContacts = Array.from(contactMap.values()).filter(contact => {
+          const normalized = normalizePhoneNumber(contact.whatsappNumber);
+          return Boolean(normalized);
+        });
+
+        if (!campaignContacts.length) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Nenhum contato válido encontrado para enviar a campanha.",
+          });
+        }
+
+        const campaignId = await db.createCampaign({
+          workspaceId,
+          name: input.name,
+          message: input.message,
+          status: "processing",
+          totalContacts: campaignContacts.length,
+          sentCount: 0,
+        });
+
+        const { sendTextMessage } = await import("./whatsappService");
+
+        let successCount = 0;
+        const failures: Array<{ contactId: number; reason: string }> = [];
+
+        for (const contact of campaignContacts) {
+          try {
+            let conversation = await db.getConversationByContact(workspaceId, contact.id);
+            let conversationId = conversation?.id;
+            if (!conversationId) {
+              conversationId = await db.createConversation({
+                workspaceId,
+                contactId: contact.id,
+                instanceId: activeInstance.id,
+                status: "bot_handling",
+              });
+            }
+
+            await sendTextMessage(
+              activeInstance.instanceKey,
+              contact.whatsappNumber!,
+              input.message,
+            );
+
+            await db.createMessage({
+              conversationId,
+              senderType: "bot",
+              senderId: ctx.user.id,
+              content: input.message,
+              messageType: "text",
+            });
+
+            successCount += 1;
+          } catch (error: any) {
+            console.error("[Campaigns] Falha ao enviar mensagem para contato", contact.id, error);
+            failures.push({
+              contactId: contact.id,
+              reason: error?.message ?? "Erro desconhecido ao enviar mensagem.",
+            });
+          }
+        }
+
+        const status = successCount === campaignContacts.length
+          ? "completed"
+          : successCount === 0
+            ? "failed"
+            : "partial";
+
+        await db.updateCampaign(campaignId, {
+          status,
+          sentCount: successCount,
+          totalContacts: campaignContacts.length,
+        });
+
+        return {
+          campaignId,
+          totalContacts: campaignContacts.length,
+          sentCount: successCount,
+          failedCount: campaignContacts.length - successCount,
+          failures,
+          status,
+        } as const;
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        campaignId: z.number(),
+        name: z.string().min(1),
+        message: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const workspaceId = ctx.user.workspaceId;
+        if (!workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        const campaign = await db.getCampaignById(workspaceId, input.campaignId);
+        if (!campaign) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Campanha não encontrada." });
+        }
+        await db.updateCampaignDetails(workspaceId, input.campaignId, {
+          name: input.name.trim(),
+          message: input.message.trim(),
+        });
+        return { success: true };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({
+        campaignId: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const workspaceId = ctx.user.workspaceId;
+        if (!workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        const campaign = await db.getCampaignById(workspaceId, input.campaignId);
+        if (!campaign) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Campanha não encontrada." });
+        }
+        await db.deleteCampaign(workspaceId, input.campaignId);
+        return { success: true };
+      }),
+
+    audiences: router({
+      list: protectedProcedure.query(async ({ ctx }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        return db.getCampaignAudiences(ctx.user.workspaceId);
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+          name: z.string().min(1),
+          numbers: z.array(z.string()).optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const workspaceId = ctx.user.workspaceId;
+          if (!workspaceId) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+          }
+          const name = input.name.trim();
+          if (!name) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Informe um nome para o grupo." });
+          }
+          const audienceId = await db.createCampaignAudience(workspaceId, name);
+
+          if (input.numbers?.length) {
+            const contacts = await ensureContactsForNumbers(workspaceId, input.numbers);
+            const contactIds = contacts.map(contact => contact.id);
+            if (contactIds.length) {
+              await db.appendCampaignAudienceMembers(audienceId, contactIds);
+            }
+          }
+
+          const audience = await db.getCampaignAudienceById(workspaceId, audienceId);
+          return audience;
+        }),
+
+      rename: protectedProcedure
+        .input(z.object({
+          audienceId: z.number(),
+          name: z.string().min(1),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          if (!ctx.user.workspaceId) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+          }
+          const name = input.name.trim();
+          if (!name) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Informe um nome para o grupo." });
+          }
+          const audience = await db.getCampaignAudienceById(ctx.user.workspaceId, input.audienceId);
+          if (!audience) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Grupo não encontrado." });
+          }
+          await db.updateCampaignAudienceName(ctx.user.workspaceId, input.audienceId, name);
+          return { success: true };
+        }),
+
+      delete: protectedProcedure
+        .input(z.object({
+          audienceId: z.number(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          if (!ctx.user.workspaceId) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+          }
+          const audience = await db.getCampaignAudienceById(ctx.user.workspaceId, input.audienceId);
+          if (!audience) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Grupo não encontrado." });
+          }
+          await db.deleteCampaignAudience(ctx.user.workspaceId, input.audienceId);
+          return { success: true };
+        }),
+
+      importNumbers: protectedProcedure
+        .input(z.object({
+          audienceId: z.number(),
+          numbers: z.array(z.string()).min(1),
+          mode: z.enum(["append", "replace"]).default("append"),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          if (!ctx.user.workspaceId) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+          }
+          const audience = await db.getCampaignAudienceById(ctx.user.workspaceId, input.audienceId);
+          if (!audience) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Grupo não encontrado." });
+          }
+
+          const contacts = await ensureContactsForNumbers(ctx.user.workspaceId, input.numbers);
+          if (!contacts.length) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Nenhum número válido foi encontrado para importar.",
+            });
+          }
+
+          const contactIds = contacts.map(contact => contact.id);
+          if (input.mode === "replace") {
+            await db.replaceCampaignAudienceMembers(input.audienceId, contactIds);
+          } else {
+            await db.appendCampaignAudienceMembers(input.audienceId, contactIds);
+          }
+
+          return {
+            success: true,
+            total: contactIds.length,
+            mode: input.mode,
+          } as const;
+        }),
+
+      members: protectedProcedure
+        .input(z.object({
+          audienceId: z.number(),
+        }))
+        .query(async ({ ctx, input }) => {
+          if (!ctx.user.workspaceId) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+          }
+          const audience = await db.getCampaignAudienceById(ctx.user.workspaceId, input.audienceId);
+          if (!audience) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Grupo não encontrado." });
+          }
+          return db.getCampaignAudienceMembers(ctx.user.workspaceId, input.audienceId);
+        }),
+    }),
   }),
 
   admin: router({
@@ -931,6 +1220,24 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "Apenas o proprietário pode bloquear usuários" });
         }
         await db.updateUserStatus(input.userId, "blocked");
+        return { success: true };
+      }),
+
+    removeMember: protectedProcedure
+      .input(z.object({
+        audienceId: z.number(),
+        contactId: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const workspaceId = ctx.user.workspaceId;
+        if (!workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        const audience = await db.getCampaignAudienceById(workspaceId, input.audienceId);
+        if (!audience) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Grupo não encontrado." });
+        }
+        await db.removeCampaignAudienceMember(input.audienceId, input.contactId);
         return { success: true };
       }),
   }),

@@ -3,7 +3,6 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { handleEvolutionWebhook } from "../webhookHandler";
@@ -38,8 +37,6 @@ async function startServer() {
   // Evolution API Webhook - MUST be before OAuth routes
   app.post("/api/webhook/evolution", handleEvolutionWebhook);
   
-  // OAuth callback under /api/oauth/callback
-  // registerOAuthRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",
@@ -62,8 +59,16 @@ async function startServer() {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
-  server.listen(port, () => {
+  server.listen(port, async () => {
     console.log(`Server running on http://localhost:${port}/`);
+    
+    // Inicializar instâncias WhatsApp existentes
+    try {
+      const { initializeExistingInstances } = await import("../whatsappService");
+      await initializeExistingInstances();
+    } catch (error) {
+      console.error("[Server] Error initializing WhatsApp instances:", error);
+    }
   });
 }
 

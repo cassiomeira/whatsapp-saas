@@ -73,7 +73,7 @@ export default function Home() {
             <Button 
               size="lg" 
               className="text-lg px-8"
-              onClick={() => window.location.href = getLoginUrl()}
+              onClick={() => setLocation(getLoginUrl())}
             >
               Começar Agora
             </Button>

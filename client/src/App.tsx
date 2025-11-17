@@ -18,11 +18,13 @@ import Onboarding from "./pages/Onboarding";
 import UserManagement from "./pages/UserManagement";
 import PendingApproval from "./pages/PendingApproval";
 import Products from "./pages/Products";
+import Login from "./pages/Login";
 
 function Router() {
   return (
     <Switch>
       <Route path={"/"} component={Home} />
+      <Route path={"/login"} component={Login} />
       <Route path={"/onboarding"} component={Onboarding} />
       <Route path={"/dashboard"} component={Dashboard} />
       <Route path={"/inbox"} component={Inbox} />

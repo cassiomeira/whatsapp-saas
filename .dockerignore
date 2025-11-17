@@ -1,0 +1,67 @@
+# Arquivos e diretórios a serem ignorados no build do Docker
+
+# Node modules (será instalado dentro do container)
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Banco de dados (será montado como volume)
+*.db
+*.db-shm
+*.db-wal
+
+# Sessões WhatsApp (será montado como volume)
+data/
+data-prod/
+**/whatsapp-sessions/
+
+# Arquivos de desenvolvimento
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.git
+.gitignore
+
+# Arquivos de build local
+dist/
+build/
+.next/
+.nuxt/
+.cache/
+
+# Logs
+logs/
+*.log
+
+# Arquivos temporários
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Arquivos do sistema
+*.lock
+*.pid
+*.seed
+*.pid.lock
+
+# Backups
+backups/
+*.backup
+*.bak
+
+# Arquivos de sessão Chrome/Puppeteer
+Default/
+Extension State/
+Session Storage/
+Local Storage/

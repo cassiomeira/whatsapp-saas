@@ -33,7 +33,8 @@ export function detectarIntencaoIXC(mensagem: string): {
   const palavrasFatura = [
     "fatura", "boleto", "conta", "débito", "dívida", "devendo",
     "pagar", "pagamento", "vencimento", "atrasado", "pendente",
-    "segunda via", "2 via", "2ª via", "cpf", "cnpj", "quanto"
+    "segunda via", "2 via", "2ª via", "cpf", "cnpj", "quanto",
+    "pix", "transferência", "transferencia", "pagto", "debito", "valor"
   ];
 
   // Palavras-chave para desbloqueio
@@ -78,7 +79,7 @@ export async function processarConsultaFatura(
     const metadata = workspace?.metadata as any;
 
     if (!metadata?.ixcApiUrl || !metadata?.ixcApiToken) {
-      return "Desculpe, a integração com o sistema de faturas não está configurada. Por favor, entre em contato com o suporte.";
+      return "No momento não consigo consultar sua fatura automaticamente. Vou transferir você para um atendente humano para que ele confirme essas informações, tudo bem?";
     }
 
     const ixcService = getIXCService({
@@ -112,7 +113,7 @@ export async function processarConsultaFatura(
     }
 
     if (!cliente) {
-      return "Não encontrei seu cadastro em nosso sistema. Por favor, verifique se o número está correto ou entre em contato com o suporte.";
+      return "Não encontrei seu cadastro em nosso sistema. Vou transferir você para um atendente humano conferir com você, combinado?";
     }
 
     // Buscar faturas em aberto
@@ -148,7 +149,7 @@ export async function processarConsultaFatura(
     return resposta;
   } catch (error: any) {
     console.error("[IXC AI Helper] Erro ao consultar fatura:", error);
-    return "Desculpe, ocorreu um erro ao consultar suas faturas. Por favor, tente novamente mais tarde ou entre em contato com o suporte.";
+    return "Desculpe, ocorreu um imprevisto na consulta da fatura. Vou transferir você agora para um atendente humano continuar o atendimento, certo?";
   }
 }
 
@@ -166,7 +167,7 @@ export async function processarDesbloqueio(
     const metadata = workspace?.metadata as any;
 
     if (!metadata?.ixcApiUrl || !metadata?.ixcApiToken) {
-      return "Desculpe, a funcionalidade de desbloqueio não está configurada. Por favor, entre em contato com o suporte.";
+      return "Ainda não consigo fazer esse desbloqueio automaticamente. Vou transferir você para um atendente humano resolver isso rapidinho, tudo bem?";
     }
 
     const ixcService = getIXCService({
@@ -200,7 +201,7 @@ export async function processarDesbloqueio(
     }
 
     if (!cliente) {
-      return "Não encontrei seu cadastro em nosso sistema. Por favor, verifique se o número está correto ou entre em contato com o suporte.";
+      return "Não encontrei seu cadastro em nosso sistema. Vou transferir você para um atendente humano checar essa informação com você, tudo bem?";
     }
 
     // Executar desbloqueio
@@ -213,7 +214,7 @@ export async function processarDesbloqueio(
     }
   } catch (error: any) {
     console.error("[IXC AI Helper] Erro ao processar desbloqueio:", error);
-    return "Desculpe, ocorreu um erro ao processar o desbloqueio. Por favor, entre em contato com o suporte.";
+    return "Desculpe, ocorreu um imprevisto ao tentar desbloquear agora. Vou transferir você para um atendente humano ajudar imediatamente, combinado?";
   }
 }
 

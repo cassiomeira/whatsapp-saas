@@ -1,5 +1,6 @@
 import { trpc } from "@/lib/trpc";
-import { UNAUTHED_ERR_MSG } from '@shared/const';
+import { supabase } from "@/lib/supabase";
+import { UNAUTHED_ERR_MSG } from "@shared/const";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
@@ -9,6 +10,25 @@ import { getLoginUrl } from "./const";
 import "./index.css";
 
 const queryClient = new QueryClient();
+
+let accessToken: string | null = null;
+
+// Chamar getSession com try/catch para não quebrar se Supabase não estiver configurado
+supabase.auth.getSession().then(({ data }) => {
+  accessToken = data.session?.access_token ?? null;
+}).catch((error) => {
+  console.warn("[Supabase] Error getting session (expected if not configured):", error.message);
+});
+
+// Registrar listener de auth state change com try/catch
+try {
+  supabase.auth.onAuthStateChange((_event, session) => {
+    accessToken = session?.access_token ?? null;
+    queryClient.invalidateQueries().catch(() => undefined);
+  });
+} catch (error) {
+  console.warn("[Supabase] Error setting up auth state change (expected if not configured):", error);
+}
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
@@ -42,10 +62,15 @@ const trpcClient = trpc.createClient({
     httpBatchLink({
       url: "/api/trpc",
       transformer: superjson,
-      fetch(input, init) {
+      async fetch(input, init) {
+        const headers = new Headers(init?.headers ?? {});
+        if (accessToken) {
+          headers.set("Authorization", `Bearer ${accessToken}`);
+        }
+
         return globalThis.fetch(input, {
           ...(init ?? {}),
-          credentials: "include",
+          headers,
         });
       },
     }),

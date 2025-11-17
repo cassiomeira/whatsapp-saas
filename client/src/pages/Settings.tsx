@@ -8,9 +8,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Settings as SettingsIcon, Webhook, Key, Server, Building2 } from "lucide-react";
+import { Settings as SettingsIcon, Webhook, Key, Server, Building2, User, Lock } from "lucide-react";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { supabase } from "@/lib/supabase";
 
 export default function Settings() {
+  const { user } = useAuth();
   const { data: workspace } = trpc.workspaces.getCurrent.useQuery();
   const updateWorkspace = trpc.workspaces.update.useMutation();
   
@@ -22,6 +25,12 @@ export default function Settings() {
   // IXC Soft Config
   const [ixcUrl, setIxcUrl] = useState("");
   const [ixcToken, setIxcToken] = useState("");
+
+  // Account / password
+  const [accountEmail, setAccountEmail] = useState<string>("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   
   // Workspace Config
   const [workspaceName, setWorkspaceName] = useState("");
@@ -48,6 +57,25 @@ export default function Settings() {
       }
     }
   }, [workspace]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const resolveEmail = async () => {
+      if (user?.email) {
+        setAccountEmail(user.email);
+        return;
+      }
+      const { data } = await supabase.auth.getSession();
+      const sessionEmail = data.session?.user?.email ?? "";
+      if (sessionEmail && isMounted) {
+        setAccountEmail(sessionEmail);
+      }
+    };
+    resolveEmail();
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.email]);
 
   const handleSaveWorkspace = async () => {
     if (!workspaceName.trim()) {
@@ -93,6 +121,44 @@ export default function Settings() {
     }
   };
 
+  const handleUpdatePassword = async () => {
+    if (!accountEmail) {
+      toast.error("Não foi possível identificar o e-mail da conta logada.");
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      toast.error("A nova senha deve ter pelo menos 8 caracteres.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      toast.error("A confirmação não coincide com a nova senha.");
+      return;
+    }
+
+    setIsUpdatingPassword(true);
+
+    try {
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (updateError) {
+        throw new Error(updateError.message || "Erro ao atualizar a senha.");
+      }
+
+      toast.success("Senha alterada com sucesso!");
+      setNewPassword("");
+      setConfirmPassword("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível alterar a senha.";
+      toast.error(message);
+    } finally {
+      setIsUpdatingPassword(false);
+    }
+  };
+
   return (
     <WorkspaceGuard>
       <DashboardLayout>
@@ -107,6 +173,10 @@ export default function Settings() {
               <TabsTrigger value="workspace">
                 <SettingsIcon className="w-4 h-4 mr-2" />
                 Workspace
+              </TabsTrigger>
+              <TabsTrigger value="account">
+                <User className="w-4 h-4 mr-2" />
+                Conta
               </TabsTrigger>
               <TabsTrigger value="evolution">
                 <Server className="w-4 h-4 mr-2" />
@@ -143,6 +213,64 @@ export default function Settings() {
                   <Button onClick={handleSaveWorkspace} disabled={updateWorkspace.isPending}>
                     {updateWorkspace.isPending ? "Salvando..." : "Salvar"}
                   </Button>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Account settings */}
+            <TabsContent value="account">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Segurança da Conta</CardTitle>
+                  <CardDescription>
+                    Atualize sua senha de acesso sempre que necessário
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="accountEmail">E-mail</Label>
+                    <Input
+                      id="accountEmail"
+                      value={accountEmail}
+                      disabled
+                      readOnly
+                    />
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="newPassword">Nova senha</Label>
+                      <Input
+                        id="newPassword"
+                        type="password"
+                        autoComplete="new-password"
+                        value={newPassword}
+                        onChange={(event) => setNewPassword(event.target.value)}
+                        placeholder="Mínimo de 8 caracteres"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="confirmPassword">Confirmar nova senha</Label>
+                      <Input
+                        id="confirmPassword"
+                        type="password"
+                        autoComplete="new-password"
+                        value={confirmPassword}
+                        onChange={(event) => setConfirmPassword(event.target.value)}
+                        placeholder="Repita a nova senha"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <Button onClick={handleUpdatePassword} disabled={isUpdatingPassword}>
+                      <Lock className="w-4 h-4 mr-2" />
+                      {isUpdatingPassword ? "Atualizando..." : "Alterar senha"}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      Por segurança, utilize uma senha forte com letras maiúsculas, minúsculas, números e símbolos.
+                    </p>
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>

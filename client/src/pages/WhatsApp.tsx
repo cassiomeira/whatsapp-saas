@@ -19,6 +19,17 @@ export default function WhatsApp() {
   const reconnect = trpc.whatsapp.reconnect.useMutation();
   const deleteInstance = trpc.whatsapp.deleteInstance.useMutation();
   
+  // Função para buscar QR Code
+  const fetchQRCode = async (instanceId: number) => {
+    try {
+      const response = await fetch(`/api/trpc/whatsapp.getQRCode?input=${encodeURIComponent(JSON.stringify({ instanceId }))}`);
+      const data = await response.json();
+      return data?.result?.data?.qrCode || null;
+    } catch (error) {
+      return null;
+    }
+  };
+  
   // Polling automático para atualizar status a cada 10 segundos
   useEffect(() => {
     const interval = setInterval(() => {
@@ -46,7 +57,53 @@ export default function WhatsApp() {
       setQrCode(result.qrCode || null);
       setSelectedInstance(result.instanceId as number);
       setInstanceName("");
-      toast.success("Instância criada! Escaneie o QR Code");
+      
+      // Se o QR Code não veio na resposta, buscar periodicamente (v2.2.3)
+      if (!result.qrCode && result.instanceId) {
+        toast.info("Aguardando QR Code...");
+        let attempts = 0;
+        const maxAttempts = 20; // 20 tentativas = 60 segundos
+        
+        const qrCodeInterval = setInterval(async () => {
+          attempts++;
+          try {
+            // Buscar QR Code diretamente da API
+            const qrCode = await fetchQRCode(result.instanceId as number);
+            if (qrCode) {
+              setQrCode(qrCode);
+              clearInterval(qrCodeInterval);
+              toast.success("QR Code gerado! Escaneie o QR Code");
+              return;
+            }
+            
+            // Também verificar na lista de instâncias
+            const instancesResult = await refetch();
+            const instance = instancesResult.data?.find((i: any) => i.id === result.instanceId);
+            if (instance?.qrCode) {
+              setQrCode(instance.qrCode);
+              clearInterval(qrCodeInterval);
+              toast.success("QR Code gerado! Escaneie o QR Code");
+              return;
+            }
+            
+            // Se conectou, parar de buscar
+            if (instance?.status === "connected") {
+              clearInterval(qrCodeInterval);
+            }
+            
+            // Parar após máximo de tentativas
+            if (attempts >= maxAttempts) {
+              clearInterval(qrCodeInterval);
+              toast.warning("QR Code não foi gerado. Tente reconectar a instância.");
+            }
+          } catch (error) {
+            // Ignorar erros
+          }
+        }, 3000); // Buscar a cada 3 segundos
+      } else {
+        toast.success("Instância criada! Escaneie o QR Code");
+      }
+      
       refetch();
     } catch (error: any) {
       toast.error(error.message || "Erro ao criar instância");

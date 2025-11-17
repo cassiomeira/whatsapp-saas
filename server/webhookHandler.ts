@@ -30,6 +30,16 @@ export interface WebhookPayload {
 
 export async function handleEvolutionWebhook(req: Request, res: Response) {
   try {
+    // Verificar API Key se fornecida (opcional, mas recomendado)
+    const providedApiKey = (req.body as any).apikey || req.headers['apikey'] || req.headers['x-api-key'];
+    const expectedApiKey = process.env.EVOLUTION_API_KEY || 'NetcarSecret2024';
+    
+    // Se uma API Key foi fornecida, validar
+    if (providedApiKey && providedApiKey !== expectedApiKey) {
+      console.warn("[Webhook] Invalid API key provided:", providedApiKey);
+      // Não rejeitar, apenas logar (algumas versões da Evolution API não enviam)
+    }
+    
     const payload: WebhookPayload = req.body;
     
     console.log("[Webhook] Received event:", payload.event);
@@ -43,6 +53,11 @@ export async function handleEvolutionWebhook(req: Request, res: Response) {
     // Atualizar status de conexão
     if (payload.event === "connection.update" || payload.event === "CONNECTION_UPDATE") {
       await handleConnectionUpdate(payload);
+    }
+    
+    // Atualizar QR Code quando for gerado (v2.2.3)
+    if (payload.event === "qrcode.updated" || payload.event === "QRCODE_UPDATED") {
+      await handleQRCodeUpdate(payload);
     }
 
     res.status(200).json({ success: true });
@@ -76,18 +91,42 @@ async function handleIncomingMessage(payload: WebhookPayload) {
     // Extrair número do WhatsApp
     const whatsappNumber = remoteJid.split("@")[0];
     
-    // Extrair texto da mensagem
+    // Extrair texto e mídia da mensagem
     let messageText = "";
+    let mediaUrl: string | undefined;
+    let mediaType: "image" | "audio" | "video" | undefined;
+    let mediaBase64: string | undefined;
+    let mediaMimeType: string | undefined;
+    const rawMessage = data.message as any;
+
     if (data.message?.conversation) {
       messageText = data.message.conversation;
     } else if (data.message?.extendedTextMessage?.text) {
       messageText = data.message.extendedTextMessage.text;
-    } else if (data.message?.imageMessage?.caption) {
+    } else if (rawMessage?.audioMessage) {
+      messageText = rawMessage.audioMessage?.caption || "[Áudio]";
+      mediaType = "audio";
+      mediaUrl = rawMessage.audioMessage?.url || rawMessage.audioMessage?.mediaUrl || rawMessage.audioMessage?.directPath;
+      mediaBase64 = rawMessage.audioMessage?.data || rawMessage.audioMessage?.base64;
+      mediaMimeType = rawMessage.audioMessage?.mimetype;
+    } else if (data.message?.imageMessage) {
       messageText = data.message.imageMessage.caption || "[Imagem]";
-    } else if (data.message?.videoMessage?.caption) {
+      mediaType = "image";
+      mediaUrl = rawMessage?.imageMessage?.url || rawMessage?.imageMessage?.mediaUrl || rawMessage?.imageMessage?.directPath;
+      mediaBase64 = rawMessage?.imageMessage?.data || rawMessage?.imageMessage?.base64;
+      mediaMimeType = rawMessage?.imageMessage?.mimetype;
+    } else if (data.message?.videoMessage) {
       messageText = data.message.videoMessage.caption || "[Vídeo]";
+      mediaType = "video";
+      mediaUrl = rawMessage?.videoMessage?.url || rawMessage?.videoMessage?.mediaUrl || rawMessage?.videoMessage?.directPath;
+      mediaBase64 = rawMessage?.videoMessage?.data || rawMessage?.videoMessage?.base64;
+      mediaMimeType = rawMessage?.videoMessage?.mimetype;
     } else {
       messageText = `[${data.messageType || "Mensagem"}]`;
+    }
+
+    if (!mediaBase64 && (rawMessage?.base64 || rawMessage?.data)) {
+      mediaBase64 = rawMessage.base64 || rawMessage.data;
     }
 
     console.log(`[Webhook] Message from ${whatsappNumber}: ${messageText}`);
@@ -126,11 +165,39 @@ async function handleIncomingMessage(payload: WebhookPayload) {
       contact.id,
       dbInstance.id,
       messageText,
-      whatsappNumber
+      whatsappNumber,
+      mediaUrl,
+      mediaType,
+      mediaBase64,
+      mediaMimeType
     );
 
   } catch (error) {
     console.error("[Webhook] Error handling incoming message:", error);
+  }
+}
+
+async function handleQRCodeUpdate(payload: WebhookPayload) {
+  try {
+    const { instance, data } = payload;
+    
+    // Buscar instância no banco
+    const dbInstance = await db.getWhatsappInstanceByKey(instance);
+    
+    if (!dbInstance) {
+      return;
+    }
+
+    // Na v2.2.3, o QR Code pode vir em data.qrcode ou data
+    const qrCodeData = (data as any).qrcode || data;
+    const qrCodeBase64 = qrCodeData?.base64 || qrCodeData?.code;
+    
+    if (qrCodeBase64) {
+      await db.updateWhatsappInstanceStatus(dbInstance.id, "connecting", undefined, qrCodeBase64);
+      console.log(`[Webhook] QR Code updated for instance ${instance}`);
+    }
+  } catch (error) {
+    console.error("[Webhook] Error handling QR code update:", error);
   }
 }
 
@@ -157,6 +224,51 @@ async function handleConnectionUpdate(payload: WebhookPayload) {
     await db.updateWhatsappInstanceStatus(dbInstance.id, newStatus);
     
     console.log(`[Webhook] Instance ${instance} status updated to ${newStatus}`);
+    
+    // Se a instância conectou com sucesso, configurar webhook agora
+    if (state === "open" || newStatus === "connected") {
+      try {
+        const workspace = await db.getWorkspaceById(dbInstance.workspaceId);
+        if (workspace?.metadata) {
+          const metadata = workspace.metadata as any;
+          if (metadata?.webhookUrl && metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
+            const { getEvolutionService } = await import("./evolutionService");
+            const evolution = getEvolutionService({
+              apiUrl: metadata.evolutionApiUrl,
+              apiKey: metadata.evolutionApiKey,
+            });
+            
+            await evolution.setWebhook(instance, metadata.webhookUrl);
+            console.log(`[Webhook] Webhook configured for ${instance} after successful connection`);
+          }
+        }
+      } catch (webhookError: any) {
+        console.warn(`[Webhook] Failed to configure webhook after connection:`, webhookError.message);
+        // Não falhar se o webhook não configurar
+      }
+    }
+    
+    // Se a instância está conectando, configurar webhook imediatamente (para receber QR Code)
+    if (state === "connecting" || newStatus === "connecting") {
+      try {
+        const workspace = await db.getWorkspaceById(dbInstance.workspaceId);
+        if (workspace?.metadata) {
+          const metadata = workspace.metadata as any;
+          if (metadata?.webhookUrl && metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
+            const { getEvolutionService } = await import("./evolutionService");
+            const evolution = getEvolutionService({
+              apiUrl: metadata.evolutionApiUrl,
+              apiKey: metadata.evolutionApiKey,
+            });
+            
+            await evolution.setWebhook(instance, metadata.webhookUrl);
+            console.log(`[Webhook] Webhook configured for ${instance} during connection`);
+          }
+        }
+      } catch (webhookError: any) {
+        console.warn(`[Webhook] Failed to configure webhook during connection:`, webhookError.message);
+      }
+    }
   } catch (error) {
     console.error("[Webhook] Error handling connection update:", error);
   }

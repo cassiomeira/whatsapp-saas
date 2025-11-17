@@ -2,8 +2,150 @@ import { invokeLLM } from "./_core/llm";
 import { transcribeAudio } from "./_core/voiceTranscription";
 import * as db from "./db";
 import { detectarIntencaoIXC, processarConsultaFatura, processarDesbloqueio, enriquecerPromptComIXC } from "./ixcAiHelper";
-import { detectarPedidoAtendente, gerarMensagemTransferencia, enriquecerPromptComAtendimento } from "./humanAttendantHelper";
+import { detectarPedidoAtendente, detectarIndecisaoOuSemFechamento, gerarMensagemTransferencia, enriquecerPromptComAtendimento } from "./humanAttendantHelper";
 import type { Product } from "../drizzle/schema";
+
+const SEARCH_RESULTS_PER_VARIANT = 20;
+const MAX_UNIQUE_PRODUCTS = 40;
+const PRODUCTS_TO_PRESENT = 20;
+const SAO_PAULO_TIMEZONE = "America/Sao_Paulo";
+const WEEKDAY_OPERATING_MINUTES = {
+  start: 7 * 60 + 30,
+  end: 20 * 60,
+};
+const SUNDAY_OPERATING_MINUTES = {
+  start: 8 * 60,
+  end: 20 * 60,
+};
+const OUT_OF_HOURS_MESSAGE =
+  "No momento estamos fora do nosso horário de atendimento. Funcionamos de segunda a sábado das 07h30 às 20h00 e aos domingos e feriados das 08h00 às 20h00. Assim que retomarmos o expediente, um atendente dará continuidade ao seu atendimento. 😊";
+
+const STOP_WORDS = new Set([
+  "a",
+  "o",
+  "os",
+  "as",
+  "um",
+  "uma",
+  "uns",
+  "umas",
+  "de",
+  "do",
+  "da",
+  "dos",
+  "das",
+  "pra",
+  "pro",
+  "para",
+  "por",
+  "com",
+  "sem",
+  "no",
+  "na",
+  "nos",
+  "nas",
+  "num",
+  "numa",
+  "que",
+  "qual",
+  "quais",
+  "quanto",
+  "quantos",
+  "quantas",
+  "quero",
+  "queria",
+  "gostaria",
+  "saber",
+  "opcoes",
+  "opcao",
+  "opções",
+  "opção",
+  "vc",
+  "vcs",
+  "voce",
+  "você",
+  "tem",
+  "têm",
+  "me",
+  "sobre",
+  "algum",
+  "alguma",
+  "alguns",
+  "algumas",
+  "pode",
+  "poderia",
+  "preciso",
+  "favor",
+  "cliente",
+  "clientes",
+  "ds",
+  "ai",
+  "aí",
+  "quaisquer",
+  "quer",
+  "precisa",
+  "precisava",
+]);
+
+const KEYWORD_SYNONYMS: Record<string, string[]> = {
+  garganta: [
+    "garganta",
+    "gargant",
+    "pastilha",
+    "pastilhas",
+    "spray",
+    "sprays",
+    "antisseptico",
+    "antissepticos",
+    "strepsils",
+    "benalet",
+    "benalete",
+    "ciflogex",
+    "hexomedine",
+    "clorhexidina",
+    "própolis",
+    "propoli",
+  ],
+  tosse: [
+    "tosse",
+    "xarope",
+    "xaropes",
+    "xarop",
+    "antitussigeno",
+    "antitussigenos",
+  ],
+  resfriado: [
+    "resfriado",
+    "resfriados",
+    "gripe",
+    "gripe",
+    "antigripal",
+    "antigripais",
+  ],
+  dor: [
+    "dor",
+    "analgesico",
+    "analgesicos",
+    "analg",
+    "paracetamol",
+    "dipirona",
+    "ibuprofeno",
+    "antiinflamatorio",
+    "antiinflamatorios",
+  ],
+};
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function normalizeForSearch(value: string | null | undefined): string {
+  return normalizeToken((value ?? "").toLowerCase()).replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function hasWholeWord(text: string, word: string): boolean {
+  if (!word) return false;
+  const pattern = new RegExp(`(^|\s)${escapeRegExp(word)}(\s|$)`);
+  return pattern.test(text);
+}
 
 function extractProductKeywords(message: string): string[] {
   return message
@@ -11,12 +153,56 @@ function extractProductKeywords(message: string): string[] {
     .replace(/[^a-z0-9à-ÿ\s]/gi, " ")
     .split(/\s+/)
     .map(part => part.trim())
-    .filter(part => part.length >= 2)
+    .filter(part => {
+      if (part.length < 3) return false;
+      const normalized = normalizeToken(part);
+      if (normalized.length < 3) return false;
+      if (STOP_WORDS.has(normalized)) return false;
+      if (/^\d+$/.test(normalized)) return false;
+      return true;
+    })
     .slice(0, 8);
 }
 
 function normalizeToken(token: string): string {
   return token.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function getCurrentTimeInfo(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: SAO_PAULO_TIMEZONE,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+  const map: Record<string, string> = {};
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      map[part.type] = part.value;
+    }
+  }
+
+  const weekday = (map.weekday || "").toLowerCase();
+  const hour = Number(map.hour ?? 0);
+  const minute = Number(map.minute ?? 0);
+  return { weekday, hour, minute, totalMinutes: hour * 60 + minute };
+}
+
+function isWithinBusinessHours(date = new Date()) {
+  const info = getCurrentTimeInfo(date);
+  const window =
+    info.weekday === "sun"
+      ? SUNDAY_OPERATING_MINUTES
+      : WEEKDAY_OPERATING_MINUTES;
+  const isOpen =
+    info.totalMinutes >= window.start && info.totalMinutes <= window.end;
+  return {
+    isOpen,
+    info,
+  };
 }
 
 function generateKeywordVariants(token: string): string[] {
@@ -39,14 +225,97 @@ function generateKeywordVariants(token: string): string[] {
   return Array.from(variants);
 }
 
+function extractJsonObject(text: string): any | null {
+  if (!text) return null;
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[0]);
+  } catch (error) {
+    console.warn("[AI Service] Failed to parse JSON from vision response:", error);
+    return null;
+  }
+}
+
+async function analyzeImageForProductHints(imageUrl: string): Promise<{
+  description: string;
+  keywords: string[];
+}> {
+  try {
+    const response = await invokeLLM({
+      maxTokens: 200,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você é especialista em identificar produtos farmacêuticos em imagens. Responda apenas em JSON no formato {\"description\":\"descrição sucinta em português\",\"keywords\":[\"keyword1\",\"keyword2\"]}. A descrição deve mencionar marca, linha, tonalidade/cor, numeração e tipo do produto. Nas keywords, retorne nomes exatos, variações observadas, códigos visíveis (ex.: 50, L'Oreal, Koleston), e termos úteis para busca no catálogo.",
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "Analise a imagem do produto e entregue descrição e palavras-chave que ajudem a encontrá-lo no catálogo.",
+            },
+            {
+              type: "image_url",
+              image_url: { url: imageUrl },
+            },
+          ],
+        },
+      ],
+    });
+
+    const rawContent =
+      typeof response.choices[0]?.message?.content === "string"
+        ? response.choices[0].message.content
+        : "";
+
+    const parsed = extractJsonObject(rawContent);
+    if (!parsed) {
+      return {
+        description: rawContent.trim(),
+        keywords: [],
+      };
+    }
+
+    const description =
+      typeof parsed.description === "string"
+        ? parsed.description.trim()
+        : rawContent.trim();
+    const keywords = Array.isArray(parsed.keywords)
+      ? parsed.keywords
+          .map((item: unknown) =>
+            typeof item === "string" ? item.trim() : ""
+          )
+          .filter(item => item.length > 0)
+      : [];
+
+    return {
+      description,
+      keywords,
+    };
+  } catch (error) {
+    console.error("[AI Service] Failed to analyze image for hints:", error);
+    return {
+      description: "",
+      keywords: [],
+    };
+  }
+}
+
 export async function generateBotResponse(
   workspaceId: number,
   conversationId: number,
   userMessage: string,
-  imageUrl?: string
+  imageUrl?: string,
+  imageKeywordHints: string[] = [],
+  isInNegotiating?: boolean
 ): Promise<string> {
   try {
     console.log("[AI Service] generateBotResponse chamado para workspace:", workspaceId);
+    console.log("[AI Service] isInNegotiating:", isInNegotiating);
     
     // Buscar configuração do bot
     const botConfig = await db.getBotConfigByWorkspace(workspaceId);
@@ -54,22 +323,68 @@ export async function generateBotResponse(
     
     if (!botConfig || !botConfig.isActive) {
       console.log("[AI Service] Bot não está ativo ou não tem config");
-      return "Olá! No momento estou indisponível. Por favor, aguarde que um atendente irá te responder em breve.";
+      const unavilableMessage = "Olá! No momento estou indisponível. Por favor, aguarde que um atendente irá te responder em breve.";
+      
+      // Se está em negotiating, adicionar aviso
+      if (isInNegotiating) {
+        return "💬 Você já foi transferido para um atendente humano que logo irá te atender!\n\nEnquanto isso, posso responder suas dúvidas:\n\n" + unavilableMessage;
+      }
+      
+      return unavilableMessage;
     }
+
+    // Aviso para quando está em negotiating (já foi transferido)
+    const negotiatingAviso = isInNegotiating 
+      ? "💬 Você já foi transferido para um atendente humano que logo irá te atender!\n\nEnquanto isso, posso responder suas dúvidas:\n\n"
+      : "";
+    
+    console.log("[AI Service] negotiatingAviso:", negotiatingAviso ? "criado" : "vazio");
 
     // Buscar histórico de mensagens da conversa
     const messages = await db.getMessagesByConversation(conversationId);
 
-    const keywords = extractProductKeywords(userMessage);
+    const normalizedMessage = userMessage.toLowerCase();
+    const normalizedMessageNoAccents = normalizeToken(normalizedMessage);
+    const transferToAttendantMessage =
+      "Entendi! Vou transferir você agora para um atendente humano que pode confirmar a disponibilidade certinha e sugerir outras opções. Aguarde só um instante, por favor.";
+    const wantsAlternativeTransfer = /\boutra(s)? opc[aã]o|\boutro produto|\boutra alternativa|\boutras alternativas|\boutra marca|\boutras marcas|\boutra cor|\boutras cores/.test(
+      normalizedMessageNoAccents
+    );
+
+    if (wantsAlternativeTransfer) {
+      return transferToAttendantMessage;
+    }
+    const baseKeywords = extractProductKeywords(userMessage);
+    const additionalKeywords = Array.from(
+      new Set(
+        imageKeywordHints
+          .map(keyword => normalizeToken(keyword.toLowerCase()))
+          .filter(
+            keyword =>
+              keyword.length >= 2 &&
+              !STOP_WORDS.has(keyword)
+          )
+      )
+    );
+    const keywords = Array.from(new Set([...baseKeywords, ...additionalKeywords]));
+    console.log("[AI Service] Keywords extraídos da mensagem/imagem:", keywords);
+    const normalizedKeywords = keywords.map(keyword => normalizeToken(keyword));
+    const primaryKeywords = normalizedKeywords.filter(keyword => keyword.length >= 4);
+    const keywordsForScoring = primaryKeywords.length > 0 ? primaryKeywords : normalizedKeywords;
     const productMatches: Product[] = [];
     const seenProductIds = new Set<number>();
 
     if (keywords.length > 0) {
-      for (const keyword of keywords) {
+      outer: for (const keyword of keywords) {
         const keywordVariants = generateKeywordVariants(keyword);
 
         for (const variant of keywordVariants) {
-          const results = await db.searchProducts(workspaceId, variant, 5);
+          const results = await db.searchProducts(
+            workspaceId,
+            variant,
+            SEARCH_RESULTS_PER_VARIANT
+          );
+
           for (const product of results) {
             if (product.id === undefined) {
               continue;
@@ -78,20 +393,137 @@ export async function generateBotResponse(
               seenProductIds.add(product.id);
               productMatches.push(product);
             }
-          }
-          if (productMatches.length >= 5) {
-            break;
+
+            if (productMatches.length >= MAX_UNIQUE_PRODUCTS) {
+              break outer;
+            }
           }
         }
       }
     }
 
     const productInquiryKeywords = /(produto|rem[eé]dio|medicamento|pre[cç]o|valor|tem\s|vende|estoque|sku|caps?ula|comprimido|ml|mg)/i;
+    const scoredProducts = productMatches
+      .map(product => {
+        const normalizedName = normalizeForSearch(product.name);
+        const normalizedDescription = normalizeForSearch(product.description);
+        let score = 0;
+        let matchedKeywords = 0;
 
-    if (keywords.length > 0 && productMatches.length === 0 && productInquiryKeywords.test(userMessage)) {
-      await db.updateConversationStatus(conversationId, "pending_human");
-      return "Não encontrei esse item no catálogo. Vou chamar um atendente humano para continuar o atendimento.";
+        for (const keyword of keywordsForScoring) {
+          if (!keyword) continue;
+
+          const variants = new Set<string>();
+          variants.add(keyword);
+          const synonymList = KEYWORD_SYNONYMS[keyword] ?? [];
+          for (const synonym of synonymList) {
+            const normalizedSynonym = normalizeToken(synonym.toLowerCase());
+            if (normalizedSynonym) {
+              variants.add(normalizedSynonym);
+            }
+          }
+
+          let keywordMatched = false;
+
+          for (const variant of variants) {
+            if (!variant || variant.length < 3) continue;
+            if (hasWholeWord(normalizedName, variant)) {
+              score += variant === keyword ? 6 : 4;
+              keywordMatched = true;
+              break;
+            }
+          }
+
+          if (!keywordMatched) {
+            for (const variant of variants) {
+              if (!variant || variant.length < 3) continue;
+              if (hasWholeWord(normalizedDescription, variant)) {
+                score += variant === keyword ? 4 : 2;
+                keywordMatched = true;
+                break;
+              }
+            }
+          }
+
+          if (keywordMatched) {
+            matchedKeywords += 1;
+          }
+        }
+
+        if (matchedKeywords === 0) {
+          return null;
+        }
+
+        return {
+          product,
+          score,
+          matchedKeywords,
+        };
+      })
+      .filter((entry): entry is { product: Product; score: number; matchedKeywords: number } => entry !== null);
+
+    const sortedProductsRaw = scoredProducts.length > 0
+      ? scoredProducts
+          .sort((a, b) => {
+            if (b.score !== a.score) {
+              return b.score - a.score;
+            }
+            const priceA = a.product.price ?? Number.MAX_SAFE_INTEGER;
+            const priceB = b.product.price ?? Number.MAX_SAFE_INTEGER;
+            if (priceA !== priceB) {
+              return priceA - priceB;
+            }
+            return (a.product.name ?? "").localeCompare(b.product.name ?? "");
+          })
+          .map(entry => entry.product)
+      : [...productMatches].sort((a, b) => {
+          const priceA = a.price ?? Number.MAX_SAFE_INTEGER;
+          const priceB = b.price ?? Number.MAX_SAFE_INTEGER;
+          if (priceA !== priceB) {
+            return priceA - priceB;
+          }
+          return (a.name ?? "").localeCompare(b.name ?? "");
+        });
+
+    const sortedProducts = sortedProductsRaw;
+
+    if (keywords.length > 0 && sortedProducts.length === 0 && productInquiryKeywords.test(userMessage)) {
+      return transferToAttendantMessage;
     }
+
+    // Verificar se o cliente pediu para ver mais opções
+    const wantsMoreProducts = /\bmais\b|outr[ao]s?|outros|mostrar mais|ver mais/.test(normalizedMessage);
+    let startIndex = 0;
+
+    if (wantsMoreProducts && sortedProducts.length > 0) {
+      // Encontrar o último bloco enviado pelo bot
+      const lastBotListMessage = [...messages]
+        .reverse()
+        .find(msg => msg.senderType === "bot" && msg.content?.includes("Preço:"));
+
+      if (lastBotListMessage?.content) {
+        const regex = /^(\d+)\./gim;
+        let match: RegExpExecArray | null;
+        let lastNumber = 0;
+        while ((match = regex.exec(lastBotListMessage.content)) !== null) {
+          const number = Number(match[1]);
+          if (!Number.isNaN(number)) {
+            lastNumber = Math.max(lastNumber, number);
+          }
+        }
+
+        if (lastNumber > 0) {
+          startIndex = lastNumber;
+        }
+      }
+
+      if (startIndex >= sortedProducts.length) {
+        return transferToAttendantMessage;
+      }
+    }
+
+    const productsToShare = sortedProducts.slice(startIndex, startIndex + PRODUCTS_TO_PRESENT);
+    const hasMoreProducts = startIndex + productsToShare.length < sortedProducts.length;
 
     // Construir contexto da conversa
     const conversationHistory = messages.slice(-10).map(msg => ({
@@ -116,12 +548,40 @@ export async function generateBotResponse(
     systemPrompt = enriquecerPromptComIXC(systemPrompt);
     systemPrompt = enriquecerPromptComAtendimento(systemPrompt);
 
-    const productContextMessage = productMatches.length > 0
-      ? `Produtos relacionados encontrados no catálogo (máximo 5):\n${productMatches
-          .map(prod => `• SKU ${prod.sku} — ${prod.name} — preço ${
-            (prod.price / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-          } — quantidade ${prod.quantity} — descrição: ${prod.description ?? "sem descrição"}`)
-          .join("\n")}\nUse apenas esses dados para responder perguntas sobre disponibilidade, preço ou características.`
+    const additionalSystemMessages: Array<{ role: "system"; content: string }> = [];
+
+    if (imageUrl) {
+      let content =
+        "O cliente enviou uma imagem e você CONSEGUE visualizá-la claramente. Faça o melhor esforço para identificar produtos, marcas, cores, textos visíveis e qualquer detalhe relevante. Descreva com precisão o que está vendo antes de sugerir soluções. Só diga que a imagem não pôde ser interpretada se ela estiver realmente ilegível (por exemplo, totalmente em branco, extremamente borrada ou corrompida); caso isso aconteça, explique o motivo de forma educada e peça outra foto se necessário.";
+      if (imageKeywordHints.length > 0) {
+        content += ` Palavras-chave extraídas da imagem: ${imageKeywordHints.join(
+          ", "
+        )}. Utilize essas palavras para buscar opções no catálogo. Se não houver correspondência exata, sugira alternativas próximas com marca ou tonalidades semelhantes e informe a disponibilidade baseada no catálogo.`;
+      } else {
+        content +=
+          " Utilize os detalhes identificados na imagem para buscar o produto ou alternativas similares no catálogo, listando os itens disponíveis.";
+      }
+      additionalSystemMessages.push({
+        role: "system",
+        content,
+      });
+    }
+
+    const productContextMessage = productsToShare.length > 0
+      ? `Produtos encontrados no catálogo (priorizados pelos mais relevantes para o pedido e, em caso de empate, do menor para o maior preço). Liste TODAS as opções abaixo exatamente na ordem apresentada, sem omitir nenhuma e sem dizer que são apenas algumas. Se houver menos de ${PRODUCTS_TO_PRESENT} itens nesta lista, informe que são as opções disponíveis para esta etapa. Ao final, pergunte explicitamente se o cliente deseja ver mais opções adicionais${
+          hasMoreProducts
+            ? ". Caso ele queira, diga que você pode mostrar mais itens ou acionar um atendente humano."
+            : ". Caso não haja mais itens, informe que essas são todas as opções encontradas."
+        }\n${productsToShare
+          .map((prod, index) => {
+            const preco = prod.price != null
+              ? (prod.price / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+              : "preço indisponível";
+            const descricao = prod.description ? `\n   • Descrição: ${prod.description}` : "";
+            const nome = prod.name ?? "Produto sem nome";
+            return `${startIndex + index + 1}. ${nome}\n   • Preço: ${preco}${descricao}`;
+          })
+          .join("\n\n")}`
       : "Nenhum produto relacionado foi recuperado do catálogo.";
 
     console.log("[AI Service] Chamando invokeLLM com", conversationHistory.length + 3, "mensagens");
@@ -135,22 +595,48 @@ export async function generateBotResponse(
           role: "system",
           content: productContextMessage,
         },
+        ...additionalSystemMessages,
         ...conversationHistory,
         lastMessage,
       ],
     });
     console.log("[AI Service] LLM respondeu com sucesso");
 
-    const botResponse = typeof response.choices[0]?.message?.content === "string" 
+    let botResponse = typeof response.choices[0]?.message?.content === "string" 
       ? response.choices[0].message.content 
       : "Desculpe, não consegui processar sua mensagem.";
+
+    const botResponseNormalized = normalizeToken(botResponse.toLowerCase());
+    // Detectar se a IA perguntou sobre transferência - REMOVER perguntas e transferir automaticamente
+    const transferPromptPatterns = [
+      /posso.*atendente/,
+      /deseja.*atendente/,
+      /quer.*atendente/,
+      /prefere.*atendente/,
+      /gostaria.*atendente/,
+      /quer.*falar.*atendente/,
+      /deseja.*falar.*atendente/,
+      /tudo bem.*transferir/,
+      /ok.*transferir/,
+      /combinado.*transferir/
+    ];
+    // Se a IA perguntou sobre transferência, REMOVER a pergunta e transferir automaticamente
+    // Mas se já está em negotiating, não substituir - apenas continuar respondendo
+    if (!isInNegotiating && transferPromptPatterns.some(pattern => pattern.test(botResponseNormalized))) {
+      console.log("[AI Service] IA perguntou sobre transferência - removendo pergunta e transferindo automaticamente");
+      botResponse = transferToAttendantMessage;
+    }
+    
+    // Adicionar aviso de negotiating no início da resposta se estiver em negotiating
+    // IMPORTANTE: Fazer isso DEPOIS de processar transferências para garantir que o aviso seja sempre adicionado
+    if (isInNegotiating && negotiatingAviso) {
+      botResponse = negotiatingAviso + botResponse;
+    }
 
     // Verificar regras de transbordo
     if (botConfig.transferRules && Array.isArray(botConfig.transferRules)) {
       for (const rule of botConfig.transferRules) {
         if (shouldTransferToHuman(userMessage, botResponse, rule)) {
-          // Atualizar status da conversa para pending_human
-          await db.updateConversationStatus(conversationId, "pending_human");
           return "Entendi! Vou transferir você para um atendente humano. Por favor, aguarde um momento.";
         }
       }
@@ -161,6 +647,14 @@ export async function generateBotResponse(
     console.error("[AI Service] Error generating response:", error);
     console.error("[AI Service] Error message:", error?.message);
     console.error("[AI Service] Error stack:", error?.stack);
+    console.error("[AI Service] isInNegotiating no catch:", isInNegotiating);
+    
+    // Se está em negotiating, ainda retornar mensagem com aviso
+    if (isInNegotiating) {
+      const fallbackMessage = "Desculpe, ocorreu um problema ao processar sua mensagem. Por favor, tente novamente ou aguarde o atendente.";
+      return "💬 Você já foi transferido para um atendente humano que logo irá te atender!\n\nEnquanto isso, posso responder suas dúvidas:\n\n" + fallbackMessage;
+    }
+    
     return "Desculpe, ocorreu um erro ao processar sua mensagem. Um atendente irá te ajudar em breve.";
   }
 }
@@ -194,9 +688,14 @@ export async function processIncomingMessage(
   messageContent: string,
   whatsappNumber: string,
   mediaUrl?: string,
-  mediaType?: "image" | "audio" | "video"
+  mediaType?: "image" | "audio" | "video",
+  mediaBase64?: string,
+  mediaMimeType?: string
 ): Promise<void> {
   try {
+    console.log(`[AI Service] ===== processIncomingMessage INICIADO =====`);
+    console.log(`[AI Service] workspaceId: ${workspaceId}, contactId: ${contactId}, messageContent: "${messageContent.substring(0, 100)}"`);
+    
     // Buscar ou criar conversa
     let conversation = await db.getConversationsByWorkspace(workspaceId);
     let activeConv = conversation.find(
@@ -222,35 +721,118 @@ export async function processIncomingMessage(
 
     // Processar mídia se houver
     let processedContent = messageContent;
+    let resolvedMediaUrl = mediaUrl;
+    let imageKeywordHints: string[] = [];
     
-    if (mediaUrl && mediaType === "audio") {
-      console.log(`[AI Service] Transcribing audio from ${mediaUrl}`);
-      try {
-        const transcription = await transcribeAudio({
-          audioUrl: mediaUrl,
-          language: "pt",
-        });
-        if ('text' in transcription) {
-          processedContent = transcription.text || "[Áudio não pôde ser transcrito]";
-          console.log(`[AI Service] Audio transcribed: ${processedContent}`);
-        } else {
-          console.error("[AI Service] Transcription error:", transcription.error);
-          processedContent = "[Áudio recebido mas não pôde ser transcrito]";
+    if (mediaType === "audio") {
+      const transcriptionOptions: Parameters<typeof transcribeAudio>[0] = {
+        language: "pt",
+      };
+
+      if (mediaBase64) {
+        try {
+          transcriptionOptions.audioBuffer = Buffer.from(mediaBase64, "base64");
+          console.log(`[AI Service] Transcribing audio from base64 payload (tamanho: ${transcriptionOptions.audioBuffer.length} bytes)`);
+        } catch (error) {
+          console.error("[AI Service] Failed to decode audio base64:", error);
         }
-      } catch (error) {
-        console.error("[AI Service] Error transcribing audio:", error);
-        processedContent = "[Áudio recebido mas não pôde ser transcrito]";
+      }
+
+      if (!transcriptionOptions.audioBuffer && mediaUrl) {
+        transcriptionOptions.audioUrl = mediaUrl;
+        console.log(`[AI Service] Transcribing audio from ${mediaUrl}`);
+      }
+
+      if (mediaMimeType) {
+        transcriptionOptions.mimeType = mediaMimeType;
+      }
+
+      if (transcriptionOptions.audioBuffer || transcriptionOptions.audioUrl) {
+        try {
+          const transcription = await transcribeAudio(transcriptionOptions);
+          if ("text" in transcription && transcription.text && transcription.text.trim().length > 0) {
+            processedContent = transcription.text.trim();
+            console.log(`[AI Service] Audio transcribed successfully: "${processedContent}"`);
+          } else {
+            console.error("[AI Service] Transcription error:", transcription.error, transcription.details);
+            // Se a transcrição falhar, usar o texto original se houver, senão usar uma mensagem genérica
+            processedContent = messageContent && messageContent.trim() && messageContent !== "[Áudio]"
+              ? messageContent
+              : "Olá, como posso ajudar?";
+            console.log(`[AI Service] Using fallback content: "${processedContent}"`);
+          }
+        } catch (error) {
+          console.error("[AI Service] Error transcribing audio:", error);
+          // Se a transcrição falhar, usar o texto original se houver, senão usar uma mensagem genérica
+          processedContent = messageContent && messageContent.trim() && messageContent !== "[Áudio]"
+            ? messageContent
+            : "Olá, como posso ajudar?";
+          console.log(`[AI Service] Using fallback content after error: "${processedContent}"`);
+        }
+      } else {
+        console.warn(`[AI Service] Audio message received but no accessible content was provided for contact ${contactId}.`);
+        // Usar texto original se houver, senão mensagem genérica
+        processedContent = messageContent && messageContent.trim() && messageContent !== "[Áudio]"
+          ? messageContent
+          : "Olá, como posso ajudar?";
+      }
+    } else if (mediaType === "image") {
+      if (mediaBase64) {
+        const mimeType =
+          mediaMimeType && mediaMimeType.trim().length > 0
+            ? mediaMimeType
+            : "image/jpeg";
+        resolvedMediaUrl = `data:${mimeType};base64,${mediaBase64}`;
+        console.log(
+          `[AI Service] Image received via base64 (mime: ${mimeType}, length: ${mediaBase64.length}).`
+        );
+      } else if (!resolvedMediaUrl) {
+        console.warn(
+          `[AI Service] Image received sem base64 ou URL acessível para o contato ${contactId}.`
+        );
+      }
+
+      if (resolvedMediaUrl) {
+        const analysis = await analyzeImageForProductHints(resolvedMediaUrl);
+        console.log("[AI Service] Resultado da visão:", analysis);
+        const descriptions: string[] = [];
+        if (analysis.description) {
+          descriptions.push(analysis.description);
+        }
+        if (Array.isArray(analysis.keywords) && analysis.keywords.length > 0) {
+          const expandedHints = new Set<string>();
+          for (const keyword of analysis.keywords) {
+            const trimmed = keyword.trim();
+            if (!trimmed) continue;
+            expandedHints.add(trimmed);
+            const parts = trimmed.split(/[\s,;\/+\-]+/);
+            for (const part of parts) {
+              const piece = part.trim();
+              if (piece.length >= 2) {
+                expandedHints.add(piece);
+              }
+            }
+          }
+          const hintList = Array.from(expandedHints);
+          descriptions.push(
+            `Palavras-chave identificadas: ${hintList.join(", ")}`
+          );
+          imageKeywordHints = hintList;
+          console.log("[AI Service] Palavras-chave finais para busca via imagem:", imageKeywordHints);
+        }
+        if (descriptions.length > 0) {
+          const originalText = messageContent?.trim();
+          const interpretedQuestion =
+            originalText && originalText !== "[Imagem]"
+              ? originalText
+              : "O cliente quer saber se temos esse produto (ou alternativas semelhantes) disponível no catálogo.";
+          processedContent = [...descriptions, interpretedQuestion].join(". ");
+        }
       }
     }
     
-    // Salvar mensagem do contato
-    await db.createMessage({
-      conversationId: activeConv.id,
-      senderType: "contact",
-      content: processedContent,
-    });
-
-    // Buscar contato para verificar status no Kanban
+    // IMPORTANTE: Salvar mensagem do contato DEPOIS de processar para garantir que todas as mensagens chegam na IA
+    // Mas primeiro buscar contato para verificar status
     const contacts = await db.getContactsByWorkspace(workspaceId);
     const contact = contacts.find(c => c.id === contactId);
     // Número de destino: se o recebido estiver vazio, use o do contato
@@ -258,31 +840,136 @@ export async function processIncomingMessage(
       ? contact.whatsappNumber
       : whatsappNumber;
 
-    // Se o contato está aguardando atendente, IA não responde
+    // Verificar status do Kanban
     const contactWaiting = contact?.kanbanStatus === "waiting_attendant";
+    const contactInNegotiating = contact?.kanbanStatus === "negotiating";
 
+    // Salvar mensagem do contato ANTES de processar (garante histórico completo)
+    await db.createMessage({
+      conversationId: activeConv.id,
+      senderType: "contact",
+      content: processedContent,
+    });
+
+    // Se o contato está aguardando atendente, IA não responde
+    // Mas se estiver em "negotiating", a IA CONTINUA respondendo com aviso
     if (contactWaiting) {
-      console.log(`[AI Service] Contato ${contactId} está aguardando atendente. IA não irá responder.`);
+      console.log(`[AI Service] Contato ${contactId} está marcado como "Aguardando Atendente". IA não irá responder.`);
       return;
     }
 
+    // Se está em negotiating, continua respondendo (será adicionado aviso na resposta)
+    if (contactInNegotiating) {
+      console.log(`[AI Service] Contato ${contactId} está em "Negociando". IA continuará respondendo com aviso de transferência.`);
+    }
+
+    console.log(`[AI Service] Conversa status: ${activeConv.status}, contactWaiting: ${contactWaiting}, contactInNegotiating: ${contactInNegotiating}`);
+
+    // Se está em negotiating, manter bot_handling para continuar respondendo
+    // Se não está em negotiating e está pending_human, reativar bot
     if (activeConv.status !== "bot_handling") {
-      if (activeConv.status === "pending_human") {
+      if (activeConv.status === "pending_human" && !contactInNegotiating) {
         console.log(`[AI Service] Conversa ${activeConv.id} estava em pending_human, mas o contato não está aguardando atendente. Reativando bot.`);
+        await db.updateConversationStatus(activeConv.id, "bot_handling");
+        activeConv.status = "bot_handling" as any;
+      } else if (contactInNegotiating && activeConv.status === "pending_human") {
+        // Se está em negotiating mas status é pending_human, mudar para bot_handling para continuar respondendo
+        console.log(`[AI Service] Contato ${contactId} está em negotiating. Mantendo bot ativo para responder perguntas.`);
+        await db.updateConversationStatus(activeConv.id, "bot_handling");
+        activeConv.status = "bot_handling" as any;
       } else {
         console.log(`[AI Service] Conversa ${activeConv.id} com status '${activeConv.status}'. Reativando bot.`);
+        await db.updateConversationStatus(activeConv.id, "bot_handling");
+        activeConv.status = "bot_handling" as any;
       }
-
-      await db.updateConversationStatus(activeConv.id, "bot_handling");
-      activeConv.status = "bot_handling" as any;
     }
 
     if (activeConv.status === "bot_handling") {
+      console.log(`[AI Service] Status é bot_handling - VAI PROCESSAR COM IA`);
+      
+      // Verificação de horário de atendimento desabilitada para testes
+      // const { isOpen } = isWithinBusinessHours();
+      // if (!isOpen) {
+      //   console.log("[AI Service] Fora do horário de atendimento. Enviando mensagem automática.");
+      //   await db.createMessage({
+      //     conversationId: activeConv.id,
+      //     senderType: "bot",
+      //     content: OUT_OF_HOURS_MESSAGE,
+      //   });
+      //
+      //   try {
+      //     const { sendTextMessage } = await import("./whatsappService");
+      //     const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
+      //     const instance = instances.find(i => i.id === instanceId);
+      //     if (instance && instance.instanceKey) {
+      //       await sendTextMessage(instance.instanceKey, destinationNumber, OUT_OF_HOURS_MESSAGE);
+      //       console.log(`[AI Service] Mensagem de horário de atendimento enviada para ${destinationNumber}`);
+      //     }
+      //   } catch (error) {
+      //     console.error("[AI Service] Erro ao enviar mensagem de horário de atendimento:", error);
+      //   }
+      //
+      //   return;
+      // }
+
       // Detectar pedido de atendente humano
       const pedidoAtendente = detectarPedidoAtendente(processedContent);
+      console.log(`[AI Service] detectarPedidoAtendente resultado:`, {
+        precisaAtendente: pedidoAtendente.precisaAtendente,
+        confianca: pedidoAtendente.confianca,
+        mensagem: processedContent.substring(0, 100)
+      });
       
-      if (pedidoAtendente.precisaAtendente && pedidoAtendente.confianca > 0.5) {
-        console.log(`[AI Service] Detectado pedido de atendente humano (confiança: ${pedidoAtendente.confianca})`);
+      // Detectar indecisão ou dificuldade em fechar compra
+      const indecisao = detectarIndecisaoOuSemFechamento(processedContent);
+      console.log(`[AI Service] detectarIndecisaoOuSemFechamento resultado:`, {
+        precisaAtendente: indecisao.precisaAtendente,
+        confianca: indecisao.confianca
+      });
+      
+      // Verificar se contato está em negotiating há muito tempo (sem fechar compra)
+      const contactInNegotiating = contact?.kanbanStatus === "negotiating";
+      
+      // Buscar mensagens uma única vez para verificar histórico
+      const messagesForHistory = await db.getMessagesByConversation(activeConv.id);
+      const botMessages = messagesForHistory.filter(m => m.senderType === "bot");
+      
+      // IMPORTANTE: Considerar apenas mensagens RECENTES (últimas 2 horas) para evitar transferir por conversas antigas
+      const duasHorasAtras = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const botMessagesRecentes = botMessages.filter(m => {
+        if (!m.createdAt) return false;
+        const messageDate = new Date(m.createdAt);
+        return messageDate >= duasHorasAtras;
+      });
+      
+      console.log(`[AI Service] Histórico: ${botMessages.length} mensagens totais do bot, ${botMessagesRecentes.length} mensagens recentes (últimas 2h), contactInNegotiating: ${contactInNegotiating}`);
+      
+      // Se JÁ está em negotiating, NÃO transferir novamente - apenas continuar respondendo
+      // Transferir automaticamente APENAS se:
+      // 1. Cliente pediu atendente MUITO explicitamente (confiança MUITO alta + pelo menos 2 mensagens recentes) OU
+      // 2. Cliente demonstra indecisão/dificuldade em fechar APÓS várias interações recentes (confiança alta + pelo menos 5 mensagens recentes) OU
+      // 3. Conversa MUITO longa RECENTE sem fechar (8+ mensagens recentes do bot)
+      // NÃO transferir em perguntas simples sobre produtos
+      // NÃO transferir nas primeiras interações - dar chance para a IA ajudar
+      const deveTransferir = !contactInNegotiating && (
+                             // Pedido direto de atendente (confiança MUITO alta + pelo menos 2 mensagens recentes do bot para evitar falso positivo)
+                             (pedidoAtendente.precisaAtendente && pedidoAtendente.confianca > 0.85 && botMessagesRecentes.length >= 2) ||
+                             // Indecisão após várias interações recentes (confiança alta + pelo menos 5 mensagens recentes do bot)
+                             (indecisao.precisaAtendente && indecisao.confianca > 0.75 && botMessagesRecentes.length >= 5) ||
+                             // Conversa muito longa RECENTE sem fechar (8+ mensagens recentes do bot)
+                             (botMessagesRecentes.length >= 8)
+                             );
+      
+      console.log(`[AI Service] deveTransferir: ${deveTransferir}`);
+      
+      if (deveTransferir) {
+        const motivo = pedidoAtendente.precisaAtendente 
+          ? `pedido direto (confiança: ${pedidoAtendente.confianca.toFixed(2)})`
+          : indecisao.precisaAtendente
+          ? `indecisão/dificuldade em fechar (confiança: ${indecisao.confianca.toFixed(2)})`
+          : `conversa longa recente sem fechamento (${botMessagesRecentes.length} mensagens recentes do bot)`;
+        
+        console.log(`[AI Service] Transferindo para atendente humano - Motivo: ${motivo}`);
         
         // Usar contato já buscado anteriormente
         const botResponse = gerarMensagemTransferencia(contact?.name || undefined);
@@ -296,31 +983,22 @@ export async function processIncomingMessage(
         
         // Enviar resposta via WhatsApp
         try {
-          const { getEvolutionService } = await import("./evolutionService");
+          const { sendTextMessage } = await import("./whatsappService");
           const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
           const instance = instances.find(i => i.id === instanceId);
           
           if (instance && instance.instanceKey) {
-            const workspace = await db.getWorkspaceById(workspaceId);
-            const metadata = workspace?.metadata as any;
-            
-            if (metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
-              const evolution = getEvolutionService({
-                apiUrl: metadata.evolutionApiUrl,
-                apiKey: metadata.evolutionApiKey,
-              });
-              await evolution.sendTextMessage(instance.instanceKey, destinationNumber, botResponse);
-              console.log(`[AI Service] Mensagem de transferência enviada para ${destinationNumber}`);
-            }
+            await sendTextMessage(instance.instanceKey, destinationNumber, botResponse);
+            console.log(`[AI Service] Mensagem de transferência enviada para ${destinationNumber}`);
           }
         } catch (error) {
           console.error(`[AI Service] Erro ao enviar mensagem de transferência:`, error);
         }
         
-        // Atualizar status do contato para "waiting_attendant"
-        await db.updateContactKanbanStatus(contactId, "waiting_attendant");
-        await db.updateConversationStatus(activeConv.id, "pending_human");
-        console.log(`[AI Service] Contato ${contactId} movido para "Aguardando Atendente"`);
+        await db.updateContactKanbanStatus(contactId, "negotiating");
+        // NÃO mudar para pending_human - manter bot_handling para continuar respondendo com aviso
+        // await db.updateConversationStatus(activeConv.id, "pending_human");
+        console.log(`[AI Service] Contato ${contactId} movido para "Negociando". Bot continuará respondendo com aviso de transferência.`);
         
         return;
       }
@@ -328,6 +1006,60 @@ export async function processIncomingMessage(
       // Detectar intenção IXC
       const intencaoIXC = detectarIntencaoIXC(processedContent);
       let botResponse: string;
+
+      const normalizedContent = processedContent.toLowerCase();
+      // Palavras-chave financeiras mais específicas (removidas palavras genéricas como "valor", "pagar")
+      const financeKeywords = [
+        "fatura",
+        "boleto",
+        "minha conta",
+        "minha fatura",
+        "segunda via",
+        "quanto devo",
+        "quanto eu devo",
+        "débito em conta",
+        "debito em conta",
+        "pix para pagar",
+        "pix da conta"
+      ];
+
+      // Frases completas que indicam solicitação financeira (não apenas palavras soltas)
+      const isFinanceRequest = financeKeywords.some(keyword => normalizedContent.includes(keyword)) ||
+                               (normalizedContent.includes("fatura") && (normalizedContent.includes("pagar") || normalizedContent.includes("vencimento"))) ||
+                               (normalizedContent.includes("segunda via") && (normalizedContent.includes("boleto") || normalizedContent.includes("fatura")));
+
+      // Aumentar confiança mínima e exigir contexto mais claro
+      if (
+        (intencaoIXC.tipo === "consulta_fatura" && intencaoIXC.confianca > 0.6) ||
+        (isFinanceRequest && intencaoIXC.confianca > 0.5)
+      ) {
+        console.log(`[AI Service] Solicitação financeira detectada (confiança: ${intencaoIXC.confianca}). Transferindo para atendente.`);
+        const saudacao = contact?.name ? `${contact.name},` : "Olá!";
+        const transferenciaFinanceira = `${saudacao} para assuntos de contas, faturas, pagamentos ou PIX, vou transferir você para um atendente humano que pode te ajudar com todos os detalhes. Aguarde só um instante, por favor.`;
+
+        await db.createMessage({
+          conversationId: activeConv.id,
+          senderType: "bot",
+          content: transferenciaFinanceira,
+        });
+
+        try {
+          const { sendTextMessage } = await import("./whatsappService");
+          const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
+          const instance = instances.find(i => i.id === instanceId);
+
+          if (instance && instance.instanceKey) {
+            await sendTextMessage(instance.instanceKey, destinationNumber, transferenciaFinanceira);
+            console.log(`[AI Service] Mensagem financeira de transferência enviada para ${destinationNumber}`);
+          }
+        } catch (error) {
+          console.error(`[AI Service] Erro ao enviar mensagem de transferência financeira:`, error);
+        }
+
+        await db.updateContactKanbanStatus(contactId, "negotiating");
+        console.log(`[AI Service] Contato ${contactId} movido para "Negociando" (assunto financeiro).`);
+        return;
+      }
 
       if (intencaoIXC.tipo === "consulta_fatura" && intencaoIXC.confianca > 0.5) {
         console.log(`[AI Service] IXC: Detectada consulta de fatura (confiança: ${intencaoIXC.confianca})`);
@@ -338,22 +1070,97 @@ export async function processIncomingMessage(
       } else {
         // Resposta normal da IA
         let finalMessage = processedContent;
-        if (mediaUrl && mediaType === "image") {
+        
+        // Log para debug de áudio
+        if (mediaType === "audio") {
+          console.log(`[AI Service] Processing audio message. Transcribed text: "${processedContent}"`);
+          console.log(`[AI Service] Original messageContent: "${messageContent}"`);
+        }
+        
+        if (resolvedMediaUrl && mediaType === "image") {
           finalMessage = `[O usuário enviou uma imagem. Analise a imagem e responda adequadamente.]\n${processedContent || ""}`;
         }
         
-        botResponse = await generateBotResponse(
-          workspaceId,
-          activeConv.id,
-          finalMessage,
-          mediaUrl && mediaType === "image" ? mediaUrl : undefined
-        );
+        console.log(`[AI Service] Calling generateBotResponse with message: "${finalMessage.substring(0, 100)}"`);
+        console.log(`[AI Service] contactInNegotiating: ${contactInNegotiating}`);
+        
+        try {
+          botResponse = await generateBotResponse(
+            workspaceId,
+            activeConv.id,
+            finalMessage,
+            resolvedMediaUrl && mediaType === "image" ? resolvedMediaUrl : undefined,
+            mediaType === "image" ? imageKeywordHints : [],
+            contactInNegotiating // Passar informação se está em negotiating
+          );
+          
+          console.log(`[AI Service] Bot response generated: "${botResponse.substring(0, 100)}"`);
+        } catch (generateError: any) {
+          console.error(`[AI Service] Error in generateBotResponse:`, generateError);
+          console.error(`[AI Service] Error stack:`, generateError?.stack);
+          
+          // Se está em negotiating, ainda assim tentar responder com aviso
+          if (contactInNegotiating) {
+            botResponse = "💬 Você já foi transferido para um atendente humano que logo irá te atender!\n\nEnquanto isso, posso responder suas dúvidas:\n\nDesculpe, ocorreu um problema ao processar sua mensagem. Por favor, tente novamente ou aguarde o atendente.";
+          } else {
+            botResponse = "Desculpe, ocorreu um erro ao processar sua mensagem. Um atendente irá te ajudar em breve.";
+          }
+        }
       }
 
-      const transferKeywords = ["transferir", "atendente"];
-      const botResponseString = botResponse.toLowerCase();
-      const containsHumano = botResponseString.includes("humano");
-      const responseIndicatesTransfer = transferKeywords.every(keyword => botResponseString.includes(keyword)) && containsHumano;
+      // Se já está em negotiating, NÃO transferir novamente - apenas continuar respondendo
+      // Verificar se a resposta da IA indica que deve transferir (apenas se NÃO estiver em negotiating)
+      let responseIndicatesTransfer = false;
+      let responseIndicatesUnknown = false;
+      let deveTransferirPorIndecisao = false;
+      
+      if (!contactInNegotiating) {
+        // Buscar histórico ANTES de verificar transferência na resposta
+        const messagesForHistoryCheck = await db.getMessagesByConversation(activeConv.id);
+        const botMessagesForCheck = messagesForHistoryCheck.filter(m => m.senderType === "bot");
+        
+        // Só verificar transferência na resposta se já tiver pelo menos 3 mensagens do bot
+        // Isso evita que a primeira resposta já dispare transferência
+        if (botMessagesForCheck.length >= 3) {
+          // Só verificar transferência se não está em negotiating
+          const transferKeywords = ["transferir", "atendente"];
+          const botResponseString = botResponse.toLowerCase();
+          const containsHumano = botResponseString.includes("humano");
+          
+          // Verificar se a resposta contém palavras de transferência, mas IGNORAR se for a própria mensagem de transferência padrão
+          const isStandardTransferMessage = botResponseString.includes("estou transferindo você para nossa equipe") ||
+                                           botResponseString.includes("vou transferir você") ||
+                                           botResponseString.includes("transferindo você para nossa equipe");
+          
+          // Só detectar transferência se NÃO for a mensagem padrão e contiver todas as palavras-chave
+          responseIndicatesTransfer = !isStandardTransferMessage && 
+                                     transferKeywords.every(keyword => botResponseString.includes(keyword)) && 
+                                     containsHumano;
+          
+          console.log(`[AI Service] Verificando resposta da IA para transferência:`, {
+            botResponseLength: botResponseString.length,
+            containsTransfer: botResponseString.includes("transferir"),
+            containsAtendente: botResponseString.includes("atendente"),
+            containsHumano: containsHumano,
+            isStandardTransferMessage,
+            responseIndicatesTransfer,
+            botMessagesCount: botMessagesForCheck.length
+          });
+        }
+
+        // Detectar se cliente ainda está indeciso na resposta atual
+        const indecisaoNaResposta = detectarIndecisaoOuSemFechamento(processedContent);
+        
+        // Buscar mensagens para verificar histórico (se ainda não foi feito)
+        const messagesForIndecisao = await db.getMessagesByConversation(activeConv.id);
+        const botMessagesForIndecisao = messagesForIndecisao.filter(m => m.senderType === "bot");
+
+        // NÃO transferir em perguntas simples sobre produtos
+        // Exigir confiança MUITO alta E múltiplas interações antes de transferir
+        deveTransferirPorIndecisao = indecisaoNaResposta.precisaAtendente && 
+                                        indecisaoNaResposta.confianca > 0.8 && 
+                                        botMessagesForIndecisao.length >= 5; // Pelo menos 5 respostas do bot (já tentou ajudar várias vezes)
+      }
 
       const fallbackPhrases = [
         "não tenho informação",
@@ -370,19 +1177,72 @@ export async function processIncomingMessage(
         "contato com o suporte",
         "procure um atendente",
         "não consigo acessar",
+        "não consegui analisar a imagem",
+        "não consigo analisar a imagem",
+        "não consigo ver a imagem",
+        "não consegui ver a imagem",
+        "não reconheço a imagem",
+        "não consegui identificar na imagem",
+        "não consigo interpretar a imagem",
+        "imagem não está clara",
+        "imagem não ficou clara",
+        "não é possível identificar pela imagem",
       ];
 
-      const responseIndicatesUnknown = fallbackPhrases.some(phrase => botResponseString.includes(phrase));
-
-      if (responseIndicatesTransfer || responseIndicatesUnknown) {
-        if (responseIndicatesUnknown && !responseIndicatesTransfer) {
-          botResponse += "\n\nVou transferir você para um atendente humano para que ele possa te ajudar melhor, tudo bem?";
+      if (!contactInNegotiating) {
+        // Buscar histórico para verificar se deve checar fallback phrases
+        const messagesForFallbackCheck = await db.getMessagesByConversation(activeConv.id);
+        const botMessagesForFallbackCheck = messagesForFallbackCheck.filter(m => m.senderType === "bot");
+        
+        // Só verificar frases de fallback se já tiver pelo menos 3 mensagens do bot
+        if (botMessagesForFallbackCheck.length >= 3) {
+          const botResponseString = botResponse.toLowerCase();
+          responseIndicatesUnknown = fallbackPhrases.some(phrase => botResponseString.includes(phrase));
         }
+      }
 
-        console.log(`[AI Service] Bot response indica transferência/encaminhamento para humano. Atualizando status do contato ${contactId}.`);
-        await db.updateContactKanbanStatus(contactId, "waiting_attendant");
-        await db.updateConversationStatus(activeConv.id, "pending_human");
-        activeConv.status = "pending_human" as any;
+      // Transferir automaticamente APENAS se:
+      // 1. IA indicou transferência explicitamente E já tentou ajudar MUITO (5+ mensagens recentes)
+      // 2. Cliente demonstra indecisão após várias interações recentes (confiança muito alta + 5+ mensagens recentes)
+      // 3. IA não consegue ajudar E já tentou várias vezes (5+ mensagens recentes)
+      // IMPORTANTE: NÃO fazer isso se já está em negotiating (já foi transferido)
+      // IMPORTANTE: NÃO perguntar, apenas transferir automaticamente
+      // NÃO transferir em perguntas simples sobre produtos
+      // NÃO transferir nas primeiras interações - dar chance para a IA ajudar primeiro
+      // IMPORTANTE: Considerar apenas mensagens RECENTES (últimas 2 horas) para evitar transferir por conversas antigas
+      const duasHorasAtrasForTransfer = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const botMessagesForTransfer = messagesForHistory
+        .filter(m => m.senderType === "bot" && m.createdAt && new Date(m.createdAt) >= duasHorasAtrasForTransfer);
+      const jaTentouAjudar = botMessagesForTransfer.length >= 5; // Pelo menos 5 tentativas recentes de ajudar
+      
+      console.log(`[AI Service] Verificando transferência final:`, {
+        contactInNegotiating,
+        jaTentouAjudar,
+        botMessagesCount: botMessagesForTransfer.length,
+        responseIndicatesTransfer,
+        responseIndicatesUnknown,
+        deveTransferirPorIndecisao
+      });
+      
+      if (!contactInNegotiating && jaTentouAjudar && (responseIndicatesTransfer || responseIndicatesUnknown || deveTransferirPorIndecisao)) {
+        const motivoTransfer = responseIndicatesTransfer 
+          ? "IA indicou transferência"
+          : responseIndicatesUnknown
+          ? "IA não conseguiu ajudar"
+          : "Cliente demonstra indecisão após ver produtos";
+        
+        console.log(`[AI Service] Transferindo automaticamente para atendente humano - Motivo: ${motivoTransfer}`);
+        
+        // Remover qualquer pergunta e substituir por transferência direta
+        botResponse = gerarMensagemTransferencia(contact?.name || undefined);
+
+        console.log(`[AI Service] Bot response indica transferência automática para humano. Atualizando status do contato ${contactId}.`);
+        
+        // Atualizar status do contato e conversa
+        await db.updateContactKanbanStatus(contactId, "negotiating");
+        // Manter bot_handling para continuar respondendo (não mudar para pending_human)
+        // await db.updateConversationStatus(activeConv.id, "pending_human");
+        console.log(`[AI Service] Contato ${contactId} movido para "Negociando". Bot continuará respondendo.`);
       }
 
       // Salvar resposta do bot
@@ -393,36 +1253,40 @@ export async function processIncomingMessage(
       });
 
       // Enviar resposta via WhatsApp API
-      console.log(`[AI Service] Bot response to ${destinationNumber}:`, botResponse);
+      console.log(`[AI Service] Bot response generated for ${destinationNumber}:`, botResponse.substring(0, 100));
       
       try {
-        const { getEvolutionService } = await import("./evolutionService");
+        const { sendTextMessage } = await import("./whatsappService");
         
         // Buscar instância para enviar resposta
         const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
+        console.log(`[AI Service] Found ${instances.length} instances for workspace ${workspaceId}`);
+        
         const instance = instances.find(i => i.id === instanceId);
+        console.log(`[AI Service] Looking for instance ${instanceId}:`, {
+          found: !!instance,
+          instanceKey: instance?.instanceKey || "missing",
+        });
+        
         if (instance && instance.instanceKey) {
-          // Buscar configuração da Evolution API
-          const workspace = await db.getWorkspaceById(workspaceId);
-          const metadata = workspace?.metadata as any;
-          
-          if (!metadata?.evolutionApiUrl || !metadata?.evolutionApiKey) {
-            console.error("[AI Service] Evolution API not configured");
-            return;
-          }
-          
-          const evolution = getEvolutionService({
-            apiUrl: metadata.evolutionApiUrl,
-            apiKey: metadata.evolutionApiKey,
+          console.log(`[AI Service] Attempting to send message via WhatsApp:`, {
+            instanceKey: instance.instanceKey,
+            destinationNumber,
+            messageLength: botResponse.length,
           });
           
-          await evolution.sendTextMessage(instance.instanceKey, destinationNumber, botResponse);
+          await sendTextMessage(instance.instanceKey, destinationNumber, botResponse);
           console.log(`[AI Service] Response sent successfully to ${destinationNumber}`);
         } else {
-          console.error(`[AI Service] Instance not found or invalid: ${instanceId}`);
+          console.error(`[AI Service] Instance not found or invalid:`, {
+            instanceId,
+            instanceFound: !!instance,
+            instanceKey: instance?.instanceKey || "missing",
+          });
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error(`[AI Service] Error sending response to WhatsApp:`, error);
+        console.error(`[AI Service] Error stack:`, error?.stack);
       }
     }
   } catch (error) {
