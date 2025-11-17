@@ -1,7 +1,7 @@
-   services:
-     - type: web
-       name: whatsapp-saas
-       env: docker
-       dockerComposePath: ./docker-compose.prod.yml
-       plan: starter
-       autoDeploy: true
+services:
+  - type: web
+    name: whatsapp-saas
+    env: docker
+    dockerComposePath: ./docker-compose.prod.yml
+    plan: starter
+    autoDeploy: true
