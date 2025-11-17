@@ -41,7 +41,11 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     lsb-release \
     xdg-utils \
+    chromium \
     && rm -rf /var/lib/apt/lists/*
+
+# Criar link para chromium-browser (Puppeteer espera esse nome)
+RUN ln -sf /usr/bin/chromium /usr/bin/chromium-browser || true
 
 # Instalar pnpm globalmente
 RUN npm install -g pnpm@10.4.1
@@ -75,4 +79,3 @@ EXPOSE 3000
 
 # Usar o script de entrada
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-
