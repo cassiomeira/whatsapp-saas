@@ -1,6 +1,14 @@
 # Use Node.js 20 como base
 FROM node:20-slim
 
+# Variáveis de build para Supabase (passadas via docker-compose/Render)
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_ANON_KEY
+
+# Disponibilizar durante todo o processo de build (especialmente pnpm build)
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+
 # Instalar dependências do sistema necessárias (incluindo Chrome para Puppeteer)
 RUN apt-get update && apt-get install -y \
     git \
