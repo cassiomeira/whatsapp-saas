@@ -11,6 +11,14 @@ const Client = wweb.Client as typeof WhatsAppClient;
 const Message = wweb.Message as typeof WhatsAppMessage;
 const LocalAuth = wweb.LocalAuth;
 
+const BASE_SESSIONS_DIR = process.env.WHATSAPP_SESSIONS_DIR
+  ? path.resolve(process.env.WHATSAPP_SESSIONS_DIR)
+  : path.resolve(process.cwd(), "data", "whatsapp-sessions");
+
+if (!fs.existsSync(BASE_SESSIONS_DIR)) {
+  fs.mkdirSync(BASE_SESSIONS_DIR, { recursive: true });
+}
+
 // Armazenar clientes ativos
 const activeClients = new Map<string, WhatsAppClient>();
 
@@ -61,12 +69,6 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         activeClients.delete(instanceKey);
         // Continuar para criar um novo cliente
       }
-    }
-
-    // Criar diretório para armazenar sessões
-    const sessionsDir = path.resolve(process.cwd(), "data", "whatsapp-sessions");
-    if (!fs.existsSync(sessionsDir)) {
-      fs.mkdirSync(sessionsDir, { recursive: true });
     }
 
     // Tentar encontrar o Chrome instalado
@@ -174,7 +176,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
     const client = new Client({
       authStrategy: new LocalAuth({
         clientId: instanceKey,
-        dataPath: sessionsDir,
+        dataPath: BASE_SESSIONS_DIR,
       }),
       puppeteer: puppeteerOptions,
     });
@@ -645,8 +647,7 @@ export async function reconnectInstance(instanceKey: string): Promise<{ qrCode: 
   await disconnectInstance(instanceKey);
   
   // Limpar sessão corrompida se necessário
-  const sessionsDir = path.resolve(process.cwd(), "data", "whatsapp-sessions");
-  const sessionPath = path.join(sessionsDir, instanceKey);
+  const sessionPath = path.join(BASE_SESSIONS_DIR, instanceKey);
   
   if (fs.existsSync(sessionPath)) {
     try {
