@@ -34,6 +34,11 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   
+  // Healthcheck endpoint (used by Docker/Render)
+  app.get("/api/health", (_req, res) => {
+    res.status(200).json({ status: "ok" });
+  });
+
   // Evolution API Webhook - MUST be before OAuth routes
   app.post("/api/webhook/evolution", handleEvolutionWebhook);
   
