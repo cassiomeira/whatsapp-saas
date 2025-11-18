@@ -928,7 +928,7 @@ export async function processIncomingMessage(
       });
       
       // Verificar se contato está em negotiating há muito tempo (sem fechar compra)
-      const contactInNegotiating = contact?.kanbanStatus === "negotiating";
+      let contactInNegotiating = contact?.kanbanStatus === "negotiating";
       
       // Buscar mensagens uma única vez para verificar histórico
       const messagesForHistory = await db.getMessagesByConversation(activeConv.id);
@@ -1108,6 +1108,27 @@ export async function processIncomingMessage(
         }
       }
 
+      const botResponseLowerCase = botResponse.toLowerCase();
+      const standardTransferIndicators = [
+        "entendi! vou transferir você",
+        "vou transferir você agora para um atendente humano",
+        "vou transferir você para um atendente humano",
+        "estou transferindo você para nossa equipe de atendimento agora mesmo"
+      ];
+      const isStandardTransferMessage = standardTransferIndicators.some(indicator =>
+        botResponseLowerCase.includes(indicator)
+      );
+
+      if (!contactInNegotiating && isStandardTransferMessage) {
+        try {
+          await db.updateContactKanbanStatus(contactId, "negotiating");
+          contactInNegotiating = true;
+          console.log(`[AI Service] Mensagem padrão de transferência detectada. Contato ${contactId} movido para "Negociando".`);
+        } catch (error) {
+          console.error(`[AI Service] Erro ao atualizar status para "Negociando" após mensagem padrão de transferência:`, error);
+        }
+      }
+
       // Se já está em negotiating, NÃO transferir novamente - apenas continuar respondendo
       // Verificar se a resposta da IA indica que deve transferir (apenas se NÃO estiver em negotiating)
       let responseIndicatesTransfer = false;
@@ -1124,23 +1145,17 @@ export async function processIncomingMessage(
         if (botMessagesForCheck.length >= 3) {
           // Só verificar transferência se não está em negotiating
           const transferKeywords = ["transferir", "atendente"];
-          const botResponseString = botResponse.toLowerCase();
-          const containsHumano = botResponseString.includes("humano");
-          
-          // Verificar se a resposta contém palavras de transferência, mas IGNORAR se for a própria mensagem de transferência padrão
-          const isStandardTransferMessage = botResponseString.includes("estou transferindo você para nossa equipe") ||
-                                           botResponseString.includes("vou transferir você") ||
-                                           botResponseString.includes("transferindo você para nossa equipe");
+          const containsHumano = botResponseLowerCase.includes("humano");
           
           // Só detectar transferência se NÃO for a mensagem padrão e contiver todas as palavras-chave
           responseIndicatesTransfer = !isStandardTransferMessage && 
-                                     transferKeywords.every(keyword => botResponseString.includes(keyword)) && 
+                                     transferKeywords.every(keyword => botResponseLowerCase.includes(keyword)) && 
                                      containsHumano;
           
           console.log(`[AI Service] Verificando resposta da IA para transferência:`, {
-            botResponseLength: botResponseString.length,
-            containsTransfer: botResponseString.includes("transferir"),
-            containsAtendente: botResponseString.includes("atendente"),
+            botResponseLength: botResponseLowerCase.length,
+            containsTransfer: botResponseLowerCase.includes("transferir"),
+            containsAtendente: botResponseLowerCase.includes("atendente"),
             containsHumano: containsHumano,
             isStandardTransferMessage,
             responseIndicatesTransfer,
