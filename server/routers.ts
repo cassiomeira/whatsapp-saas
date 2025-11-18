@@ -507,6 +507,18 @@ export const appRouter = router({
         await db.deleteProductUpload(input.uploadId);
         return { success: true };
       }),
+
+    resetCatalog: protectedProcedure
+      .mutation(async ({ ctx }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        await db.deleteProductsByWorkspace(ctx.user.workspaceId);
+        await db.deleteProductUploadsByWorkspace(ctx.user.workspaceId);
+
+        return { success: true };
+      }),
   }),
 
   bot: router({

@@ -34,6 +34,7 @@ export default function Products() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [isResettingCatalog, setIsResettingCatalog] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -51,6 +52,7 @@ export default function Products() {
 
   const uploadCsvMutation = trpc.products.uploadCsv.useMutation();
   const deleteUploadMutation = trpc.products.deleteUpload.useMutation();
+  const resetCatalogMutation = trpc.products.resetCatalog.useMutation();
 
   const displayProducts = searchQuery.length > 0 ? searchResults : products;
 
@@ -133,6 +135,32 @@ export default function Products() {
     }
   };
 
+  const handleResetCatalog = async () => {
+    if (
+      !confirm(
+        "Esta ação vai remover todos os produtos e histórico de uploads. Deseja continuar?"
+      )
+    ) {
+      return;
+    }
+
+    setIsResettingCatalog(true);
+    try {
+      await resetCatalogMutation.mutateAsync();
+      toast.success("Catálogo de produtos zerado com sucesso.");
+      await Promise.all([refetchProducts(), refetchUploads()]);
+    } catch (error) {
+      console.error("Erro ao zerar catálogo:", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Erro ao zerar o catálogo de produtos.";
+      toast.error(message);
+    } finally {
+      setIsResettingCatalog(false);
+    }
+  };
+
   const formatPrice = (priceInCents: number) => {
     return (priceInCents / 100).toLocaleString("pt-BR", {
       style: "currency",
@@ -156,13 +184,26 @@ export default function Products() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex justify-between items-start">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <h1 className="text-3xl font-bold">Catálogo de Produtos</h1>
             <p className="text-gray-600 mt-1">
               Gerencie seu catálogo de produtos para consultas do bot IA
             </p>
           </div>
+          <Button
+            variant="destructive"
+            onClick={handleResetCatalog}
+            disabled={isResettingCatalog}
+            className="w-full md:w-auto"
+          >
+            {isResettingCatalog ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Trash2 className="w-4 h-4 mr-2" />
+            )}
+            Zerar catálogo
+          </Button>
         </div>
 
         <Card>

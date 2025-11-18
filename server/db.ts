@@ -801,6 +801,20 @@ export async function deleteProductUpload(id: number) {
   await db.delete(productUploads).where(eq(productUploads.id, id));
 }
 
+export async function deleteProductsByWorkspace(workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.delete(products).where(eq(products.workspaceId, workspaceId));
+}
+
+export async function deleteProductUploadsByWorkspace(workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.delete(productUploads).where(eq(productUploads.workspaceId, workspaceId));
+}
+
 export async function getProductUploadById(id: number) {
   const db = await getDb();
   if (!db) return undefined;
