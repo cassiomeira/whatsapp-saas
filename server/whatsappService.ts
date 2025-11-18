@@ -268,8 +268,12 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         }
         
         // Ignorar mensagens de grupos (por enquanto)
-        if (message.from.includes("@g.us")) {
+        if (message.from.includes("@g.us") || message.author?.includes("@g.us")) {
           console.log(`[WhatsApp] Ignoring group message from ${message.from}`);
+          return;
+        }
+        if (message.from === "status@broadcast" || message.id?.remote === "status@broadcast") {
+          console.log("[WhatsApp] Ignoring status/broadcast message");
           return;
         }
 
@@ -280,6 +284,23 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         }
 
         console.log(`[WhatsApp] Instance found: ${dbInstance.id}, workspace: ${dbInstance.workspaceId}`);
+        
+        if (message.timestamp && dbInstance.createdAt) {
+          const instanceCreatedAtMs =
+            dbInstance.createdAt instanceof Date
+              ? dbInstance.createdAt.getTime()
+              : typeof dbInstance.createdAt === "number"
+                ? dbInstance.createdAt * 1000
+                : new Date(dbInstance.createdAt).getTime();
+          const messageTimestampMs = message.timestamp * 1000;
+          
+          if (instanceCreatedAtMs && messageTimestampMs && messageTimestampMs + 5000 < instanceCreatedAtMs) {
+            console.log(
+              `[WhatsApp] Ignoring old message (timestamp ${messageTimestampMs}) older than instance creation (${instanceCreatedAtMs})`
+            );
+            return;
+          }
+        }
 
         // Extrair número do WhatsApp (formato: 5511999999999@s.whatsapp.net)
         const whatsappNumber = message.from.split("@")[0];
@@ -341,6 +362,33 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
           } catch (mediaError) {
             console.error(`[WhatsApp] Error downloading media:`, mediaError);
           }
+        }
+
+        const normalizedContent = `${message.body || ""} ${message.caption || ""}`.toLowerCase();
+        const prescriptionKeywords = ["receita", "prescrição", "prescricao", "receitinha", "receitou"];
+        const mentionsPrescription = normalizedContent
+          ? prescriptionKeywords.some(keyword => normalizedContent.includes(keyword))
+          : false;
+        
+        if (mentionsPrescription) {
+          console.log("[WhatsApp] Prescription detected. Transferring to human attendant.");
+          const transferMessage =
+            "Recebi sua receita e, por segurança, vou transferir você imediatamente para um atendente humano que pode auxiliar melhor. Aguarde só um instante, por favor. 😊";
+          
+          try {
+            await client.sendMessage(message.from, transferMessage);
+          } catch (sendError) {
+            console.error("[WhatsApp] Failed to send prescription transfer message:", sendError);
+          }
+          
+          try {
+            await db.updateContactKanbanStatus(contact.id, "negotiating");
+          } catch (statusError) {
+            console.error("[WhatsApp] Failed to update contact status during prescription transfer:", statusError);
+          }
+          
+          // Não processar a receita com a IA
+          return;
         }
 
         console.log(`[WhatsApp] Calling processIncomingMessage with:`, {
