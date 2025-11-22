@@ -1140,28 +1140,23 @@ export async function processIncomingMessage(
         const messagesForHistoryCheck = await db.getMessagesByConversation(activeConv.id);
         const botMessagesForCheck = messagesForHistoryCheck.filter(m => m.senderType === "bot");
         
-        // Só verificar transferência na resposta se já tiver pelo menos 3 mensagens do bot
-        // Isso evita que a primeira resposta já dispare transferência
-        if (botMessagesForCheck.length >= 3) {
-          // Só verificar transferência se não está em negotiating
-          const transferKeywords = ["transferir", "atendente"];
-          const containsHumano = botResponseLowerCase.includes("humano");
-          
-          // Só detectar transferência se NÃO for a mensagem padrão e contiver todas as palavras-chave
-          responseIndicatesTransfer = !isStandardTransferMessage && 
-                                     transferKeywords.every(keyword => botResponseLowerCase.includes(keyword)) && 
-                                     containsHumano;
-          
-          console.log(`[AI Service] Verificando resposta da IA para transferência:`, {
-            botResponseLength: botResponseLowerCase.length,
-            containsTransfer: botResponseLowerCase.includes("transferir"),
-            containsAtendente: botResponseLowerCase.includes("atendente"),
-            containsHumano: containsHumano,
-            isStandardTransferMessage,
-            responseIndicatesTransfer,
-            botMessagesCount: botMessagesForCheck.length
-          });
-        }
+        const transferKeywords = ["transferir", "atendente"];
+        const containsHumano = botResponseLowerCase.includes("humano");
+        
+        // Só detectar transferência se NÃO for a mensagem padrão e contiver todas as palavras-chave
+        responseIndicatesTransfer = !isStandardTransferMessage && 
+                                   transferKeywords.every(keyword => botResponseLowerCase.includes(keyword)) && 
+                                   containsHumano;
+        
+        console.log(`[AI Service] Verificando resposta da IA para transferência:`, {
+          botResponseLength: botResponseLowerCase.length,
+          containsTransfer: botResponseLowerCase.includes("transferir"),
+          containsAtendente: botResponseLowerCase.includes("atendente"),
+          containsHumano: containsHumano,
+          isStandardTransferMessage,
+          responseIndicatesTransfer,
+          botMessagesCount: botMessagesForCheck.length
+        });
 
         // Detectar se cliente ainda está indeciso na resposta atual
         const indecisaoNaResposta = detectarIndecisaoOuSemFechamento(processedContent);
@@ -1170,11 +1165,10 @@ export async function processIncomingMessage(
         const messagesForIndecisao = await db.getMessagesByConversation(activeConv.id);
         const botMessagesForIndecisao = messagesForIndecisao.filter(m => m.senderType === "bot");
 
-        // NÃO transferir em perguntas simples sobre produtos
-        // Exigir confiança MUITO alta E múltiplas interações antes de transferir
+        // Transferir com menos tentativas quando há sinais fortes de indecisão
         deveTransferirPorIndecisao = indecisaoNaResposta.precisaAtendente && 
                                         indecisaoNaResposta.confianca > 0.8 && 
-                                        botMessagesForIndecisao.length >= 5; // Pelo menos 5 respostas do bot (já tentou ajudar várias vezes)
+                                        botMessagesForIndecisao.length >= 2;
       }
 
       const fallbackPhrases = [
@@ -1205,59 +1199,27 @@ export async function processIncomingMessage(
       ];
 
       if (!contactInNegotiating) {
-        // Buscar histórico para verificar se deve checar fallback phrases
-        const messagesForFallbackCheck = await db.getMessagesByConversation(activeConv.id);
-        const botMessagesForFallbackCheck = messagesForFallbackCheck.filter(m => m.senderType === "bot");
-        
-        // Só verificar frases de fallback se já tiver pelo menos 3 mensagens do bot
-        if (botMessagesForFallbackCheck.length >= 3) {
-          const botResponseString = botResponse.toLowerCase();
-          responseIndicatesUnknown = fallbackPhrases.some(phrase => botResponseString.includes(phrase));
-        }
+        responseIndicatesUnknown = fallbackPhrases.some(phrase => botResponseLowerCase.includes(phrase));
       }
 
-      // Transferir automaticamente APENAS se:
-      // 1. IA indicou transferência explicitamente E já tentou ajudar MUITO (5+ mensagens recentes)
-      // 2. Cliente demonstra indecisão após várias interações recentes (confiança muito alta + 5+ mensagens recentes)
-      // 3. IA não consegue ajudar E já tentou várias vezes (5+ mensagens recentes)
-      // IMPORTANTE: NÃO fazer isso se já está em negotiating (já foi transferido)
-      // IMPORTANTE: NÃO perguntar, apenas transferir automaticamente
-      // NÃO transferir em perguntas simples sobre produtos
-      // NÃO transferir nas primeiras interações - dar chance para a IA ajudar primeiro
-      // IMPORTANTE: Considerar apenas mensagens RECENTES (últimas 2 horas) para evitar transferir por conversas antigas
-      const duasHorasAtrasForTransfer = new Date(Date.now() - 2 * 60 * 60 * 1000);
-      const botMessagesForTransfer = messagesForHistory
-        .filter(m => m.senderType === "bot" && m.createdAt && new Date(m.createdAt) >= duasHorasAtrasForTransfer);
-      const jaTentouAjudar = botMessagesForTransfer.length >= 5; // Pelo menos 5 tentativas recentes de ajudar
-      
-      console.log(`[AI Service] Verificando transferência final:`, {
-        contactInNegotiating,
-        jaTentouAjudar,
-        botMessagesCount: botMessagesForTransfer.length,
-        responseIndicatesTransfer,
-        responseIndicatesUnknown,
-        deveTransferirPorIndecisao
-      });
-      
-      if (!contactInNegotiating && jaTentouAjudar && (responseIndicatesTransfer || responseIndicatesUnknown || deveTransferirPorIndecisao)) {
+      if (!contactInNegotiating && (responseIndicatesTransfer || responseIndicatesUnknown || deveTransferirPorIndecisao)) {
         const motivoTransfer = responseIndicatesTransfer 
           ? "IA indicou transferência"
           : responseIndicatesUnknown
           ? "IA não conseguiu ajudar"
-          : "Cliente demonstra indecisão após ver produtos";
+          : "Cliente demonstra indecisão na resposta atual";
         
         console.log(`[AI Service] Transferindo automaticamente para atendente humano - Motivo: ${motivoTransfer}`);
         
-        // Remover qualquer pergunta e substituir por transferência direta
         botResponse = gerarMensagemTransferencia(contact?.name || undefined);
-
-        console.log(`[AI Service] Bot response indica transferência automática para humano. Atualizando status do contato ${contactId}.`);
         
-        // Atualizar status do contato e conversa
-        await db.updateContactKanbanStatus(contactId, "negotiating");
-        // Manter bot_handling para continuar respondendo (não mudar para pending_human)
-        // await db.updateConversationStatus(activeConv.id, "pending_human");
-        console.log(`[AI Service] Contato ${contactId} movido para "Negociando". Bot continuará respondendo.`);
+        try {
+          await db.updateContactKanbanStatus(contactId, "negotiating");
+          contactInNegotiating = true;
+          console.log(`[AI Service] Contato ${contactId} movido para "Negociando" devido à resposta atual.`);
+        } catch (statusError) {
+          console.error("[AI Service] Erro ao atualizar status para negotiating após resposta atual:", statusError);
+        }
       }
 
       // Salvar resposta do bot

@@ -373,7 +373,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         if (mentionsPrescription) {
           console.log("[WhatsApp] Prescription detected. Transferring to human attendant.");
           const transferMessage =
-            "Recebi sua receita e, por segurança, vou transferir você imediatamente para um atendente humano que pode auxiliar melhor. Aguarde só um instante, por favor. 😊";
+            "Recebi sua receita e, por segurança, estou transferindo você agora para um atendente humano analisar cuidadosamente o documento. Aguarde só um instante, por favor. 😊";
           
           try {
             await client.sendMessage(message.from, transferMessage);
