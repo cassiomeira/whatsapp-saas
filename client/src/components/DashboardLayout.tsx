@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { useTheme } from "@/contexts/ThemeContext";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -21,7 +22,7 @@ import {
 } from "@/components/ui/sidebar";
 import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, LogOut, PanelLeft, Users, MessageSquare, Bot, Workflow, BarChart3, Settings, PhoneCall, Megaphone, UserCog, Package } from "lucide-react";
+import { LayoutDashboard, LogOut, PanelLeft, Users, MessageSquare, Bot, Workflow, BarChart3, Settings, PhoneCall, Megaphone, UserCog, Package, Sun, Moon } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
@@ -134,6 +135,7 @@ function DashboardLayoutContent({
   setSidebarWidth,
 }: DashboardLayoutContentProps) {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme, switchable } = useTheme();
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar } = useSidebar();
   const isCollapsed = state === "collapsed";
@@ -142,6 +144,9 @@ function DashboardLayoutContent({
   const menuItems = getMenuItems(user?.workspaceRole);
   const activeMenuItem = menuItems.find(item => item.path === location);
   const isMobile = useIsMobile();
+
+  const workspaceLogo =
+    (user?.workspaceMetadata as { logoDataUrl?: string })?.logoDataUrl || APP_LOGO;
 
   useEffect(() => {
     if (isCollapsed) {
@@ -191,11 +196,17 @@ function DashboardLayoutContent({
             <div className="flex items-center gap-3 pl-2 group-data-[collapsible=icon]:px-0 transition-all w-full">
               {isCollapsed ? (
                 <div className="relative h-8 w-8 shrink-0 group">
-                  <img
-                    src={APP_LOGO}
-                    className="h-8 w-8 rounded-md object-cover ring-1 ring-border"
-                    alt="Logo"
-                  />
+                  {workspaceLogo ? (
+                    <img
+                      src={workspaceLogo}
+                      className="h-8 w-8 rounded-md object-cover ring-1 ring-border"
+                      alt="Logo"
+                    />
+                  ) : (
+                    <div className="h-8 w-8 rounded-md bg-muted flex items-center justify-center text-sm font-semibold">
+                      {APP_TITLE.charAt(0)}
+                    </div>
+                  )}
                   <button
                     onClick={toggleSidebar}
                     className="absolute inset-0 flex items-center justify-center bg-accent rounded-md ring-1 ring-border opacity-0 group-hover:opacity-100 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -206,11 +217,17 @@ function DashboardLayoutContent({
               ) : (
                 <>
                   <div className="flex items-center gap-3 min-w-0">
-                    <img
-                      src={APP_LOGO}
-                      className="h-8 w-8 rounded-md object-cover ring-1 ring-border shrink-0"
-                      alt="Logo"
-                    />
+                    {workspaceLogo ? (
+                      <img
+                        src={workspaceLogo}
+                        className="h-8 w-8 rounded-md object-cover ring-1 ring-border shrink-0"
+                        alt="Logo"
+                      />
+                    ) : (
+                      <div className="h-8 w-8 rounded-md bg-muted flex items-center justify-center text-sm font-semibold shrink-0">
+                        {APP_TITLE.charAt(0)}
+                      </div>
+                    )}
                     <span className="font-semibold tracking-tight truncate">
                       {APP_TITLE}
                     </span>
@@ -303,8 +320,46 @@ function DashboardLayoutContent({
                 </div>
               </div>
             </div>
+            {switchable && toggleTheme && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={toggleTheme}
+              >
+                {theme === "light" ? (
+                  <Moon className="h-4 w-4" />
+                ) : (
+                  <Sun className="h-4 w-4" />
+                )}
+              </Button>
+            )}
           </div>
         )}
+
+        {!isMobile && switchable && toggleTheme && (
+          <div className="hidden md:flex justify-end items-center h-14 border-b bg-background/80 px-6 sticky top-0 z-30 backdrop-blur">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-2"
+              onClick={toggleTheme}
+            >
+              {theme === "light" ? (
+                <>
+                  <Moon className="h-4 w-4" />
+                  <span>Modo escuro</span>
+                </>
+              ) : (
+                <>
+                  <Sun className="h-4 w-4" />
+                  <span>Modo claro</span>
+                </>
+              )}
+            </Button>
+          </div>
+        )}
+
         <main className="flex-1 p-4">{children}</main>
       </SidebarInset>
     </>

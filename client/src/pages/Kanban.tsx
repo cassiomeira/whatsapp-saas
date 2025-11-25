@@ -19,7 +19,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { Phone, X, Send, Maximize2 } from "lucide-react";
+import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -30,18 +30,28 @@ type Contact = {
   whatsappNumber: string;
   kanbanStatus: string | null;
   profilePicUrl: string | null;
+  metadata?: Record<string, any> | null;
 };
 
-const KANBAN_COLUMNS = [
+type KanbanColumn = {
+  id: string;
+  title: string;
+  color: string;
+  isSeller?: boolean;
+};
+
+type SellerColumn = {
+  id: string;
+  name: string;
+};
+
+const DEFAULT_COLUMNS: KanbanColumn[] = [
   { id: "new_contact", title: "Novo Contato", color: "bg-blue-500" },
-  { id: "contacted", title: "Contatado", color: "bg-yellow-500" },
   { id: "waiting_attendant", title: "Aguardando Atendente", color: "bg-orange-500" },
   { id: "negotiating", title: "Negociando", color: "bg-purple-500" },
-  { id: "sold", title: "Vendido", color: "bg-green-500" },
-  { id: "lost", title: "Perdido", color: "bg-red-500" },
 ];
 
-function ContactCard({ contact, onClick }: { contact: Contact; onClick?: () => void }) {
+function ContactCard({ contact, onClick, onArchive }: { contact: Contact; onClick?: () => void; onArchive?: () => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `contact-${contact.id}`,
     data: {
@@ -57,6 +67,8 @@ function ContactCard({ contact, onClick }: { contact: Contact; onClick?: () => v
     cursor: 'pointer',
   };
 
+  const hasUnread = Boolean(contact.metadata?.unread);
+
   return (
     <div 
       ref={setNodeRef} 
@@ -70,8 +82,11 @@ function ContactCard({ contact, onClick }: { contact: Contact; onClick?: () => v
         }
       }}
     >
-      <Card className="p-3 hover:shadow-md transition-shadow hover:ring-2 hover:ring-primary">
-        <div className="flex items-start gap-3">
+      <Card className="relative p-3 hover:shadow-md transition-shadow hover:ring-2 hover:ring-primary">
+        {hasUnread && (
+          <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 ring-2 ring-background" />
+        )}
+        <div className="flex items-start justify-between gap-3">
           {contact.profilePicUrl ? (
             <img
               src={contact.profilePicUrl}
@@ -85,12 +100,27 @@ function ContactCard({ contact, onClick }: { contact: Contact; onClick?: () => v
               </span>
             </div>
           )}
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 pr-2">
             <p className="font-medium text-sm truncate">{contact.name || "Sem nome"}</p>
             <div className="flex items-center gap-1 text-xs text-muted-foreground mt-1">
               <Phone className="w-3 h-3" />
               <span className="truncate">{contact.whatsappNumber}</span>
             </div>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            {onArchive && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onArchive();
+                }}
+              >
+                <Archive className="w-3 h-3" />
+              </Button>
+            )}
           </div>
         </div>
       </Card>
@@ -101,11 +131,15 @@ function ContactCard({ contact, onClick }: { contact: Contact; onClick?: () => v
 function DroppableColumn({ 
   column, 
   contacts,
-  onContactClick
+  onContactClick,
+  onArchiveContact,
+  onDeleteSellerColumn,
 }: { 
-  column: typeof KANBAN_COLUMNS[0]; 
+  column: KanbanColumn; 
   contacts: Contact[];
   onContactClick: (contact: Contact) => void;
+  onArchiveContact: (contact: Contact) => void;
+  onDeleteSellerColumn?: (columnId: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: column.id,
@@ -123,9 +157,21 @@ function DroppableColumn({
       }`}
     >
       <CardHeader className="pb-3">
-        <div className="flex items-center gap-2">
-          <div className={`w-3 h-3 rounded-full ${column.color}`} />
-          <CardTitle className="text-base">{column.title}</CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <div className={`w-3 h-3 rounded-full ${column.color}`} />
+            <CardTitle className="text-base">{column.title}</CardTitle>
+          </div>
+          {column.isSeller && onDeleteSellerColumn && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-red-500 hover:text-red-600"
+              onClick={() => onDeleteSellerColumn(column.id)}
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
         </div>
         <p className="text-xs text-muted-foreground mt-1">
           {contacts.length} {contacts.length === 1 ? "contato" : "contatos"}
@@ -138,7 +184,12 @@ function DroppableColumn({
         >
           {contacts.length > 0 ? (
             contacts.map((contact) => (
-              <ContactCard key={contact.id} contact={contact} onClick={() => onContactClick(contact)} />
+              <ContactCard
+                key={contact.id}
+                contact={contact}
+                onClick={() => onContactClick(contact)}
+                onArchive={() => onArchiveContact(contact)}
+              />
             ))
           ) : (
             <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
@@ -154,6 +205,7 @@ function DroppableColumn({
 export default function Kanban() {
   const [autoRefresh, setAutoRefresh] = useState(true);
 
+  const { data: workspace, refetch: refetchWorkspace } = trpc.workspaces.current.useQuery();
   const { data: contacts, refetch } = trpc.contacts.list.useQuery(undefined, {
     refetchInterval: autoRefresh ? 5000 : false,
     refetchOnWindowFocus: true,
@@ -167,12 +219,126 @@ export default function Kanban() {
     return () => clearInterval(timer);
   }, [refetch]);
   const updateStatus = trpc.contacts.updateKanbanStatus.useMutation();
+  const updateKanbanSeller = trpc.workspaces.updateKanbanSeller.useMutation();
+  const renameContactMutation = trpc.contacts.rename.useMutation();
+  const markAsReadMutation = trpc.contacts.markAsRead.useMutation();
+  const archiveContactMutation = trpc.contacts.archive.useMutation();
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const sellerColumns: SellerColumn[] = Array.isArray(
+    (workspace?.metadata as any)?.kanbanSellerColumns
+  )
+    ? (workspace?.metadata as any).kanbanSellerColumns
+    : [];
+
+  const dynamicColumns: KanbanColumn[] = sellerColumns.map((column) => ({
+    id: column.id,
+    title: column.name,
+    color: "bg-emerald-500",
+    isSeller: true,
+  }));
+
+  const kanbanColumns = [...DEFAULT_COLUMNS, ...dynamicColumns];
+  const allowedStatuses = new Set(kanbanColumns.map((column) => column.id));
+
+  const normalizeStatus = (status?: string | null) => {
+    if (status === "archived") {
+      return null;
+    }
+    if (status && allowedStatuses.has(status)) {
+      return status;
+    }
+    return "waiting_attendant";
+  };
 
   const handleContactClick = (contact: Contact) => {
-    // Abrir painel lateral de chat
     setSelectedContact(contact);
+    markAsReadMutation
+      .mutateAsync({ contactId: contact.id })
+      .then(() => refetch())
+      .catch(() => undefined);
+  };
+
+  const handleAddSellerColumn = async () => {
+    const name = window.prompt("Nome do vendedor?");
+    if (!name || !name.trim()) {
+      return;
+    }
+
+    try {
+      await updateKanbanSeller.mutateAsync({
+        action: "add",
+        name: name.trim(),
+      });
+      toast.success("Coluna criada com sucesso!");
+      await refetchWorkspace();
+    } catch (error) {
+      console.error(error);
+      toast.error("Erro ao criar coluna");
+    }
+  };
+
+  const handleDeleteSellerColumn = async (columnId: string) => {
+    if (
+      !window.confirm(
+        "Deseja remover esta coluna? Todos os contatos nela voltarão para 'Aguardando Atendente'."
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await updateKanbanSeller.mutateAsync({
+        action: "delete",
+        columnId,
+      });
+      toast.success("Coluna removida!");
+      await Promise.all([refetchWorkspace(), refetch()]);
+    } catch (error) {
+      console.error(error);
+      toast.error("Erro ao remover coluna");
+    }
+  };
+
+  const handleRenameContact = async () => {
+    if (!selectedContact) return;
+    const newName = window.prompt(
+      "Novo nome do contato",
+      selectedContact.name || ""
+    )?.trim();
+    if (!newName) return;
+
+    try {
+      await renameContactMutation.mutateAsync({
+        contactId: selectedContact.id,
+        name: newName,
+      });
+      toast.success("Contato renomeado!");
+      setSelectedContact({ ...selectedContact, name: newName });
+      await refetch();
+    } catch (error) {
+      console.error(error);
+      toast.error("Erro ao renomear contato");
+    }
+  };
+
+  const handleArchiveContact = async (contact: Contact) => {
+    if (
+      !window.confirm(
+        "Remover este contato do quadro? Ele vai reaparecer automaticamente se enviar uma nova mensagem."
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await archiveContactMutation.mutateAsync({ contactId: contact.id });
+      toast.success("Contato removido do quadro. Ele voltará ao enviar nova mensagem.");
+      await refetch();
+    } catch (error) {
+      console.error(error);
+      toast.error("Erro ao remover contato");
+    }
   };
 
   const sensors = useSensors(
@@ -215,6 +381,10 @@ export default function Kanban() {
     const contact = contacts?.find((c) => c.id === contactId);
     if (!contact || contact.kanbanStatus === newStatus) return;
 
+    if (!allowedStatuses.has(newStatus)) {
+      newStatus = "waiting_attendant";
+    }
+
     try {
       await updateStatus.mutateAsync({
         contactId,
@@ -238,16 +408,34 @@ export default function Kanban() {
   };
 
   const getContactsByStatus = (status: string) => {
-    return contacts?.filter((c) => c.kanbanStatus === status) || [];
+    return (
+      contacts
+        ?.filter((c) => {
+          const normalized = normalizeStatus(c.kanbanStatus || "new_contact");
+          if (!normalized) return false;
+          return normalized === status;
+        }) || []
+    );
   };
 
   return (
     <WorkspaceGuard>
       <DashboardLayout>
         <div className="p-8">
-          <div className="mb-6">
-            <h1 className="text-3xl font-bold">CRM Kanban</h1>
-            <p className="text-muted-foreground">Arraste os cards para mudar o status dos contatos</p>
+          <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h1 className="text-3xl font-bold">CRM Kanban</h1>
+              <p className="text-muted-foreground">Arraste os cards para mudar o status dos contatos</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => setAutoRefresh((prev) => !prev)}>
+                {autoRefresh ? "Pausar auto refresh" : "Ativar auto refresh"}
+              </Button>
+              <Button onClick={handleAddSellerColumn}>
+                <Plus className="w-4 h-4 mr-2" />
+                Novo vendedor
+              </Button>
+            </div>
           </div>
 
           <DndContext 
@@ -257,22 +445,30 @@ export default function Kanban() {
             onDragOver={handleDragOver}
             onDragEnd={handleDragEnd}
           >
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-          <div className="flex justify-end mb-3">
-            <Button variant="outline" size="sm" onClick={() => refetch()}>
-              Atualizar agora
-            </Button>
-          </div>
+            <div className="flex justify-end mb-3">
+              <Button variant="outline" size="sm" onClick={() => refetch()}>
+                Atualizar agora
+              </Button>
+            </div>
 
-          {KANBAN_COLUMNS.map((column) => {
+            <div className="flex flex-wrap gap-4">
+              {kanbanColumns.map((column) => {
                 const columnContacts = getContactsByStatus(column.id);
                 return (
-                  <DroppableColumn 
-                    key={column.id} 
-                    column={column} 
-                    contacts={columnContacts}
-                    onContactClick={handleContactClick}
-                  />
+                  <div
+                    key={column.id}
+                    className="flex-1 min-w-[260px] max-w-[360px]"
+                  >
+                    <DroppableColumn
+                      column={column}
+                      contacts={columnContacts}
+                      onContactClick={handleContactClick}
+                  onArchiveContact={handleArchiveContact}
+                      onDeleteSellerColumn={
+                        column.isSeller ? () => handleDeleteSellerColumn(column.id) : undefined
+                      }
+                    />
+                  </div>
                 );
               })}
             </div>
@@ -317,7 +513,18 @@ export default function Kanban() {
                   </div>
                 )}
                 <div>
-                  <p className="font-medium">{selectedContact.name || "Sem nome"}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium">{selectedContact.name || "Sem nome"}</p>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={handleRenameContact}
+                      title="Renomear contato"
+                      className="h-8 w-8"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                  </div>
                   <p className="text-xs text-muted-foreground">{selectedContact.whatsappNumber}</p>
                 </div>
               </div>

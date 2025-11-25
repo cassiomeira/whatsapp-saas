@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { APP_LOGO, APP_TITLE } from "@/const";
 import {
   Dialog,
@@ -21,13 +22,21 @@ interface ManusDialogProps {
 
 export function ManusDialog({
   title = APP_TITLE,
-  logo = APP_LOGO,
+  logo,
   open = false,
   onLogin,
   onOpenChange,
   onClose,
 }: ManusDialogProps) {
   const [internalOpen, setInternalOpen] = useState(open);
+  const { user } = useAuth();
+  const workspaceLogo =
+    (user?.workspaceMetadata as { logoDataUrl?: string })?.logoDataUrl || APP_LOGO;
+  const finalLogo = logo || workspaceLogo;
+  const { user } = useAuth();
+  const workspaceLogo =
+    (user?.workspaceMetadata as { logoUrl?: string })?.logoUrl || APP_LOGO;
+  const finalLogo = logo || workspaceLogo;
 
   useEffect(() => {
     if (!onOpenChange) {
@@ -55,7 +64,7 @@ export function ManusDialog({
       <DialogContent className="py-5 bg-[#f8f8f7] rounded-[20px] w-[400px] shadow-[0px_4px_11px_0px_rgba(0,0,0,0.08)] border border-[rgba(0,0,0,0.08)] backdrop-blur-2xl p-0 gap-0 text-center">
         <div className="flex flex-col items-center gap-2 p-5 pt-12">
           <div className="w-16 h-16 bg-white rounded-xl border border-[rgba(0,0,0,0.08)] flex items-center justify-center">
-            <img src={logo} alt="App icon" className="w-10 h-10 rounded-md" />
+            <img src={finalLogo} alt="App icon" className="w-10 h-10 rounded-md" />
           </div>
 
           {/* Title and subtitle */}

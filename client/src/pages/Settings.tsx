@@ -6,16 +6,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { Settings as SettingsIcon, Webhook, Key, Server, Building2, User, Lock } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { APP_LOGO } from "@/const";
 import { supabase } from "@/lib/supabase";
 
 export default function Settings() {
-  const { user } = useAuth();
+  const { user, refresh } = useAuth();
   const { data: workspace } = trpc.workspaces.getCurrent.useQuery();
   const updateWorkspace = trpc.workspaces.update.useMutation();
+  const workspaceUtils = trpc.useUtils();
+  const logoInputRef = useRef<HTMLInputElement>(null);
   
   // Evolution API Config
   const [evolutionUrl, setEvolutionUrl] = useState("http://localhost:8080");
@@ -34,6 +37,8 @@ export default function Settings() {
   
   // Workspace Config
   const [workspaceName, setWorkspaceName] = useState("");
+  const [logoDataUrl, setLogoDataUrl] = useState("");
+  const [isSavingLogo, setIsSavingLogo] = useState(false);
 
   useEffect(() => {
     if (workspace) {
@@ -54,6 +59,11 @@ export default function Settings() {
       }
       if (metadata?.ixcApiToken) {
         setIxcToken(metadata.ixcApiToken);
+      }
+      if (metadata?.logoDataUrl) {
+        setLogoDataUrl(metadata.logoDataUrl);
+      } else {
+        setLogoDataUrl("");
       }
     }
   }, [workspace]);
@@ -77,6 +87,15 @@ export default function Settings() {
     };
   }, [user?.email]);
 
+  const getCurrentMetadata = () => ((workspace as any)?.metadata || {});
+
+  const syncWorkspaceData = async () => {
+    await Promise.all([
+      workspaceUtils.workspaces.getCurrent.invalidate(),
+      refresh(),
+    ]);
+  };
+
   const handleSaveWorkspace = async () => {
     if (!workspaceName.trim()) {
       toast.error("Digite um nome para o workspace");
@@ -87,6 +106,7 @@ export default function Settings() {
       await updateWorkspace.mutateAsync({
         name: workspaceName,
       });
+      await syncWorkspaceData();
       toast.success("Workspace atualizado!");
     } catch (error) {
       toast.error("Erro ao atualizar workspace");
@@ -105,9 +125,9 @@ export default function Settings() {
     }
 
     try {
-      // Salvar no metadata do workspace
       await updateWorkspace.mutateAsync({
         metadata: {
+          ...getCurrentMetadata(),
           evolutionApiUrl: evolutionUrl,
           evolutionApiKey: evolutionKey,
           webhookUrl: webhookUrl,
@@ -116,8 +136,67 @@ export default function Settings() {
       
       toast.success("Configuração da Evolution API salva!");
       toast.info("Reinicie a aplicação para aplicar as mudanças");
+      await syncWorkspaceData();
     } catch (error) {
       toast.error("Erro ao salvar configuração");
+    }
+  };
+
+  const handleLogoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Envie um arquivo de imagem (PNG, JPG, SVG)");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Imagem muito grande. Limite 2MB.");
+      return;
+    }
+
+    setIsSavingLogo(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result as string;
+      try {
+        await updateWorkspace.mutateAsync({
+          metadata: {
+            ...getCurrentMetadata(),
+            logoDataUrl: dataUrl,
+          },
+        });
+        setLogoDataUrl(dataUrl);
+        toast.success("Logomarca atualizada!");
+        await syncWorkspaceData();
+      } catch (error) {
+        console.error(error);
+        toast.error("Erro ao salvar logomarca");
+      } finally {
+        setIsSavingLogo(false);
+        if (logoInputRef.current) {
+          logoInputRef.current.value = "";
+        }
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveLogo = async () => {
+    if (!logoDataUrl) return;
+    setIsSavingLogo(true);
+    try {
+      const currentMetadata = { ...getCurrentMetadata() };
+      delete currentMetadata.logoDataUrl;
+      await updateWorkspace.mutateAsync({
+        metadata: currentMetadata,
+      });
+      setLogoDataUrl("");
+      toast.success("Logomarca removida.");
+      await syncWorkspaceData();
+    } catch (error) {
+      toast.error("Erro ao remover logomarca");
+    } finally {
+      setIsSavingLogo(false);
     }
   };
 
@@ -209,6 +288,49 @@ export default function Settings() {
                       onChange={(e) => setWorkspaceName(e.target.value)}
                       placeholder="Ex: Minha Empresa"
                     />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Logomarca</Label>
+                    <div className="flex flex-wrap items-center gap-4">
+                      <div className="w-20 h-20 rounded-xl border bg-background flex items-center justify-center overflow-hidden">
+                        <img
+                          src={logoDataUrl || APP_LOGO}
+                          alt="Logo do workspace"
+                          className="max-h-full max-w-full object-contain"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => logoInputRef.current?.click()}
+                          disabled={isSavingLogo}
+                        >
+                          {isSavingLogo ? "Enviando..." : "Selecionar imagem"}
+                        </Button>
+                        {logoDataUrl && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive"
+                            onClick={handleRemoveLogo}
+                            disabled={isSavingLogo}
+                          >
+                            Remover logo
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <input
+                      ref={logoInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/svg+xml"
+                      className="hidden"
+                      onChange={handleLogoUpload}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Formatos recomendados: PNG ou JPG até 2MB.
+                    </p>
                   </div>
                   <Button onClick={handleSaveWorkspace} disabled={updateWorkspace.isPending}>
                     {updateWorkspace.isPending ? "Salvando..." : "Salvar"}
@@ -445,15 +567,15 @@ export default function Settings() {
                         return;
                       }
                       try {
-                        const currentMetadata = (workspace as any)?.metadata || {};
                         await updateWorkspace.mutateAsync({
                           metadata: {
-                            ...currentMetadata,
+                            ...getCurrentMetadata(),
                             ixcApiUrl: ixcUrl,
                             ixcApiToken: ixcToken,
                           },
                         });
                         toast.success("Configuração IXC Soft salva!");
+                        await syncWorkspaceData();
                       } catch (error) {
                         toast.error("Erro ao salvar configuração");
                       }

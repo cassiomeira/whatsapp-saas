@@ -29,7 +29,7 @@ import {
   InsertCampaignAudience,
   campaignAudienceMembers,
 } from "../drizzle/schema";
-import { ENV } from './_core/env';
+import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -153,6 +153,24 @@ export async function getWorkspaceById(id: number) {
   const result = await db.select().from(workspaces).where(eq(workspaces.id, id)).limit(1);
   console.log("[DB] getWorkspaceById: Resultado da consulta:", result);
   return result[0];
+}
+
+export async function updateWorkspaceMetadata(id: number, updater: (metadata: any) => any) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[DB] updateWorkspaceMetadata: Database não disponível");
+    throw new Error("Database not available");
+  }
+
+  const workspace = await getWorkspaceById(id);
+  const currentMetadata = (workspace?.metadata as any) ?? {};
+  const nextMetadata = updater({ ...currentMetadata }) ?? {};
+
+  await db.update(workspaces)
+    .set({ metadata: nextMetadata, updatedAt: new Date() })
+    .where(eq(workspaces.id, id));
+
+  return nextMetadata;
 }
 
 export async function updateWorkspace(id: number, data: { name?: string; metadata?: any }) {
@@ -331,6 +349,34 @@ export async function updateContactName(id: number, name: string) {
   await db.update(contacts)
     .set({ name, updatedAt: new Date() })
     .where(eq(contacts.id, id));
+}
+
+export async function updateContactMetadata(id: number, updater: (metadata: any) => any) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const existing = await db.select().from(contacts).where(eq(contacts.id, id)).limit(1);
+  if (!existing.length) return;
+  const currentMetadata = (existing[0].metadata as any) ?? {};
+  const nextMetadata = updater({ ...currentMetadata }) ?? {};
+
+  await db.update(contacts)
+    .set({ metadata: nextMetadata, updatedAt: new Date() })
+    .where(eq(contacts.id, id));
+}
+
+export async function moveContactsToStatus(workspaceId: number, fromStatus: string, toStatus: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(contacts)
+    .set({ kanbanStatus: toStatus, updatedAt: new Date() })
+    .where(
+      and(
+        eq(contacts.workspaceId, workspaceId),
+        eq(contacts.kanbanStatus, fromStatus)
+      )
+    );
 }
 
 // Conversation functions

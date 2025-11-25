@@ -19,6 +19,23 @@ if (!fs.existsSync(BASE_SESSIONS_DIR)) {
   fs.mkdirSync(BASE_SESSIONS_DIR, { recursive: true });
 }
 
+const LOCK_FILES = ["SingletonLock", "SingletonCookie", "SingletonStartupLock"];
+
+function cleanupChromiumLocks(instanceKey: string) {
+  const profileDir = path.join(BASE_SESSIONS_DIR, instanceKey, "Default");
+  for (const file of LOCK_FILES) {
+    const lockPath = path.join(profileDir, file);
+    try {
+      if (fs.existsSync(lockPath)) {
+        fs.unlinkSync(lockPath);
+        console.log(`[WhatsApp] Removed Chromium lock file: ${lockPath}`);
+      }
+    } catch (error) {
+      console.warn(`[WhatsApp] Failed to remove lock file ${lockPath}:`, error);
+    }
+  }
+}
+
 // Armazenar clientes ativos
 const activeClients = new Map<string, WhatsAppClient>();
 
@@ -134,6 +151,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
     console.log(`[WhatsApp] Creating new client for ${instanceKey}...`);
 
     // Criar cliente WhatsApp
+    cleanupChromiumLocks(instanceKey);
     const puppeteerOptions: any = {
       headless: true,
       args: [
@@ -331,6 +349,22 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
           return;
         }
 
+        let contactStatus = contact.kanbanStatus || "new_contact";
+        if (contactStatus === "archived") {
+          await db.updateContactKanbanStatus(contact.id, "new_contact");
+          contactStatus = "new_contact";
+        }
+        await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
+          ...metadata,
+          unread: true,
+        }));
+        const isSellerStatus = contactStatus.startsWith("seller_");
+        const contactWaiting = contactStatus === "waiting_attendant" || isSellerStatus;
+
+        if (contactWaiting) {
+          console.log(`[WhatsApp] Contact ${contact.id} in manual status (${contactStatus}). Bot will stay silent but message will be stored.`);
+        }
+
         // Extrair conteúdo da mensagem
         let messageContent = message.body || "";
         let mediaUrl: string | undefined;
@@ -373,7 +407,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         if (mentionsPrescription) {
           console.log("[WhatsApp] Prescription detected. Transferring to human attendant.");
           const transferMessage =
-            "Recebi sua receita e, por segurança, estou transferindo você agora para um atendente humano analisar cuidadosamente o documento. Aguarde só um instante, por favor. 😊";
+            "Recebi sua receita e, por segurança, vou transferir você imediatamente para um atendente humano que pode auxiliar melhor. Aguarde só um instante, por favor. 😊";
           
           try {
             await client.sendMessage(message.from, transferMessage);

@@ -107,7 +107,18 @@ export const appRouter = router({
   system: systemRouter,
 
   auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
+    me: publicProcedure.query(async ({ ctx }) => {
+      if (!ctx.user) return null;
+      let workspaceMetadata: any = null;
+      if (ctx.user.workspaceId) {
+        const workspace = await db.getWorkspaceById(ctx.user.workspaceId);
+        workspaceMetadata = workspace?.metadata ?? null;
+      }
+      return {
+        ...ctx.user,
+        workspaceMetadata,
+      };
+    }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -188,6 +199,62 @@ export const appRouter = router({
       }
       return db.getWorkspaceById(ctx.user.workspaceId);
     }),
+
+    updateKanbanSeller: protectedProcedure
+      .input(z.object({
+        action: z.enum(["add", "delete"]),
+        name: z.string().min(2).optional(),
+        columnId: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        const workspaceId = ctx.user.workspaceId;
+
+        if (input.action === "add") {
+          if (!input.name) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Nome do vendedor obrigatório" });
+          }
+          const slug = input.name
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+          const columnId = `seller_${slug || "col"}_${Date.now()}`;
+
+          await db.updateWorkspaceMetadata(workspaceId, (metadata: any = {}) => {
+            const columns = Array.isArray(metadata.kanbanSellerColumns)
+              ? metadata.kanbanSellerColumns
+              : [];
+            return {
+              ...metadata,
+              kanbanSellerColumns: [...columns, { id: columnId, name: input.name }],
+            };
+          });
+
+          return { success: true };
+        }
+
+        if (!input.columnId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "columnId obrigatório para exclusão" });
+        }
+
+        await db.updateWorkspaceMetadata(workspaceId, (metadata: any = {}) => {
+          const columns = Array.isArray(metadata.kanbanSellerColumns)
+            ? metadata.kanbanSellerColumns
+            : [];
+          return {
+            ...metadata,
+            kanbanSellerColumns: columns.filter((col: any) => col.id !== input.columnId),
+          };
+        });
+
+        await db.moveContactsToStatus(workspaceId, input.columnId, "waiting_attendant");
+
+        return { success: true };
+      }),
   }),
 
   contacts: router({
@@ -210,6 +277,50 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
         await db.updateContactKanbanStatus(input.contactId, input.status);
+        return { success: true };
+      }),
+
+    rename: protectedProcedure
+      .input(z.object({
+        contactId: z.number(),
+        name: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        await db.updateContactName(input.contactId, input.name);
+        return { success: true };
+      }),
+
+    markAsRead: protectedProcedure
+      .input(z.object({
+        contactId: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        await db.updateContactMetadata(input.contactId, (metadata: any = {}) => ({
+          ...metadata,
+          unread: false,
+        }));
+        return { success: true };
+      }),
+
+    archive: protectedProcedure
+      .input(z.object({
+        contactId: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        await db.updateContactKanbanStatus(input.contactId, "archived");
+        await db.updateContactMetadata(input.contactId, (metadata: any = {}) => ({
+          ...metadata,
+          unread: false,
+        }));
         return { success: true };
       }),
   }),
@@ -292,6 +403,10 @@ export const appRouter = router({
           const contact = contacts.find(c => c.id === conversation.contactId);
           
           if (contact) {
+            await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
+              ...metadata,
+              unread: false,
+            }));
             // Buscar instância WhatsApp
             const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId!);
             const instance = instances.find(i => i.id === conversation.instanceId);
