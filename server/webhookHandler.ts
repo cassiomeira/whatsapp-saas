@@ -159,6 +159,70 @@ async function handleIncomingMessage(payload: WebhookPayload) {
       return;
     }
 
+    // Verificar status do contato
+    let contactStatus = contact.kanbanStatus || "new_contact";
+    if (contactStatus === "archived") {
+      await db.updateContactKanbanStatus(contact.id, "new_contact");
+      contactStatus = "new_contact";
+    }
+    await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
+      ...metadata,
+      unread: true,
+    }));
+    const isSellerStatus = contactStatus.startsWith("seller_");
+    const contactWaiting = contactStatus === "waiting_attendant" || isSellerStatus;
+
+    // Se for imagem, transferir automaticamente para atendente (exceto se já estiver em status manual)
+    if (mediaType === "image" && !contactWaiting) {
+      console.log("[Webhook] Image detected. Transferring to human attendant.");
+      const transferMessage =
+        "Vou transferir você para um atendente para continuar o atendimento. Aguarde só um instante, por favor.";
+      
+      // Tentar enviar mensagem via Evolution API se disponível
+      try {
+        const workspace = await db.getWorkspaceById(dbInstance.workspaceId);
+        if (workspace?.metadata) {
+          const metadata = workspace.metadata as any;
+          if (metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
+            const { getEvolutionService } = await import("./evolutionService");
+            const evolution = getEvolutionService({
+              apiUrl: metadata.evolutionApiUrl,
+              apiKey: metadata.evolutionApiKey,
+            });
+            await evolution.sendTextMessage(instance, whatsappNumber, transferMessage);
+          }
+        }
+      } catch (sendError) {
+        console.error("[Webhook] Failed to send image transfer message:", sendError);
+      }
+      
+      try {
+        await db.updateContactKanbanStatus(contact.id, "negotiating");
+      } catch (statusError) {
+        console.error("[Webhook] Failed to update contact status during image transfer:", statusError);
+      }
+      
+      // Salvar a mensagem no banco antes de retornar
+      try {
+        await db.createMessage({
+          workspaceId: dbInstance.workspaceId,
+          contactId: contact.id,
+          instanceId: dbInstance.id,
+          content: messageText,
+          direction: "incoming",
+          mediaUrl,
+          mediaType,
+          mediaBase64,
+          mediaMimeType,
+        });
+      } catch (msgError) {
+        console.error("[Webhook] Failed to save image message:", msgError);
+      }
+      
+      // Não processar a imagem com a IA
+      return;
+    }
+
     // Processar mensagem com IA
     await processIncomingMessage(
       dbInstance.workspaceId,

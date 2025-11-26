@@ -1,2 +1,3 @@
-2025/11/16-19:53:35.623 594c Creating DB C:\manus2pcspn\sasswhatsappfuncionando\data\whatsapp-sessions\session-ws2_1763333615216\Default\shared_proto_db since it was missing.
-2025/11/16-19:53:35.662 594c Reusing MANIFEST C:\manus2pcspn\sasswhatsappfuncionando\data\whatsapp-sessions\session-ws2_1763333615216\Default\shared_proto_db/MANIFEST-000001
+2025/11/24-19:06:40.948 8f8 Reusing MANIFEST C:\guithub\whatsapp-saastestenovo\data\whatsapp-sessions\session-ws2_1763333615216\Default\shared_proto_db/MANIFEST-000001
+2025/11/24-19:06:41.068 8f8 Recovering log #3
+2025/11/24-19:06:41.069 8f8 Reusing old log C:\guithub\whatsapp-saastestenovo\data\whatsapp-sessions\session-ws2_1763333615216\Default\shared_proto_db/000003.log 

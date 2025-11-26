@@ -398,6 +398,45 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
           }
         }
 
+        // Se for imagem, transferir automaticamente para atendente (exceto se já estiver em status manual)
+        if (mediaType === "image" && !contactWaiting) {
+          console.log("[WhatsApp] Image detected. Transferring to human attendant.");
+          const transferMessage =
+            "Vou transferir você para um atendente para continuar o atendimento. Aguarde só um instante, por favor.";
+          
+          try {
+            await client.sendMessage(message.from, transferMessage);
+          } catch (sendError) {
+            console.error("[WhatsApp] Failed to send image transfer message:", sendError);
+          }
+          
+          try {
+            await db.updateContactKanbanStatus(contact.id, "negotiating");
+          } catch (statusError) {
+            console.error("[WhatsApp] Failed to update contact status during image transfer:", statusError);
+          }
+          
+          // Salvar a mensagem no banco antes de retornar
+          try {
+            await db.createMessage({
+              workspaceId: dbInstance.workspaceId,
+              contactId: contact.id,
+              instanceId: dbInstance.id,
+              content: messageContent,
+              direction: "incoming",
+              mediaUrl,
+              mediaType,
+              mediaBase64,
+              mediaMimeType,
+            });
+          } catch (msgError) {
+            console.error("[WhatsApp] Failed to save image message:", msgError);
+          }
+          
+          // Não processar a imagem com a IA
+          return;
+        }
+
         const normalizedContent = `${message.body || ""} ${message.caption || ""}`.toLowerCase();
         const prescriptionKeywords = ["receita", "prescrição", "prescricao", "receitinha", "receitou"];
         const mentionsPrescription = normalizedContent

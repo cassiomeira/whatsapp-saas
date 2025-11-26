@@ -1,0 +1,23 @@
+2025/11/25-08:28:44.815 515c Reusing MANIFEST C:\guithub\whatsapp-saastestenovo\data\whatsapp-sessions\session-ws2_1764069778701\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/11/25-08:28:44.817 515c Recovering log #183
+2025/11/25-08:28:44.876 515c Reusing old log C:\guithub\whatsapp-saastestenovo\data\whatsapp-sessions\session-ws2_1764069778701\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000183.log 
+2025/11/25-08:28:49.234 26bc Manual compaction at level-0 from '\x00%\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00&\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/11/25-08:33:54.824 26bc Level-0 table #193: started
+2025/11/25-08:33:55.208 26bc Level-0 table #193: 981356 bytes OK
+2025/11/25-08:33:55.646 26bc Delete type=0 #183
+2025/11/25-08:33:55.671 26bc Manual compaction at level-0 from '\x00&\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00'\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/11/25-08:34:00.082 515c Compacting 1@1 + 6@2 files
+2025/11/25-08:34:00.320 515c Generated table #194@1: 44906 keys, 2204234 bytes
+2025/11/25-08:34:00.533 515c Generated table #195@1: 28231 keys, 2184412 bytes
+2025/11/25-08:34:00.945 515c Generated table #196@1: 20641 keys, 2175622 bytes
+2025/11/25-08:34:01.175 515c Generated table #197@1: 96822 keys, 2244476 bytes
+2025/11/25-08:34:01.217 515c Generated table #198@1: 29214 keys, 591948 bytes
+2025/11/25-08:34:01.217 515c Compacted 1@1 + 6@2 files => 9400692 bytes
+2025/11/25-08:34:01.244 515c compacted to: files[ 0 0 5 0 0 0 0 ]
+2025/11/25-08:34:01.245 515c Delete type=2 #185
+2025/11/25-08:34:01.245 515c Delete type=2 #186
+2025/11/25-08:34:01.245 515c Delete type=2 #187
+2025/11/25-08:34:01.245 515c Delete type=2 #188
+2025/11/25-08:34:01.245 515c Delete type=2 #189
+2025/11/25-08:34:01.245 515c Delete type=2 #190
+2025/11/25-08:34:01.245 515c Delete type=2 #193

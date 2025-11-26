@@ -1,2 +1,3 @@
-2025/11/16-19:53:35.367 594c Creating DB C:\manus2pcspn\sasswhatsappfuncionando\data\whatsapp-sessions\session-ws2_1763333615216\Default\Sync Data\LevelDB since it was missing.
-2025/11/16-19:53:35.387 594c Reusing MANIFEST C:\manus2pcspn\sasswhatsappfuncionando\data\whatsapp-sessions\session-ws2_1763333615216\Default\Sync Data\LevelDB/MANIFEST-000001
+2025/11/24-19:06:40.310 44e4 Reusing MANIFEST C:\guithub\whatsapp-saastestenovo\data\whatsapp-sessions\session-ws2_1763333615216\Default\Sync Data\LevelDB/MANIFEST-000001
+2025/11/24-19:06:40.338 44e4 Recovering log #3
+2025/11/24-19:06:40.339 44e4 Reusing old log C:\guithub\whatsapp-saastestenovo\data\whatsapp-sessions\session-ws2_1763333615216\Default\Sync Data\LevelDB/000003.log 

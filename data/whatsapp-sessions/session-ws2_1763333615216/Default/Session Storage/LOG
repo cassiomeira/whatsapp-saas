@@ -1,2 +1,3 @@
-2025/11/16-19:53:35.516 4500 Creating DB C:\manus2pcspn\sasswhatsappfuncionando\data\whatsapp-sessions\session-ws2_1763333615216\Default\Session Storage since it was missing.
-2025/11/16-19:53:35.611 4500 Reusing MANIFEST C:\manus2pcspn\sasswhatsappfuncionando\data\whatsapp-sessions\session-ws2_1763333615216\Default\Session Storage/MANIFEST-000001
+2025/11/24-19:06:44.182 44d8 Reusing MANIFEST C:\guithub\whatsapp-saastestenovo\data\whatsapp-sessions\session-ws2_1763333615216\Default\Session Storage/MANIFEST-000001
+2025/11/24-19:06:44.276 44d8 Recovering log #3
+2025/11/24-19:06:44.299 44d8 Reusing old log C:\guithub\whatsapp-saastestenovo\data\whatsapp-sessions\session-ws2_1763333615216\Default\Session Storage/000003.log 
