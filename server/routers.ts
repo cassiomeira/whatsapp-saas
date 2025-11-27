@@ -323,6 +323,86 @@ export const appRouter = router({
         }));
         return { success: true };
       }),
+
+    // Iniciar nova conversa (criar/obter contato e conversa)
+    startConversation: protectedProcedure
+      .input(z.object({
+        whatsappNumber: z.string().min(1),
+        name: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        // Normalizar número (remover caracteres não numéricos, exceto +)
+        const normalizedNumber = input.whatsappNumber.replace(/[^\d+]/g, "");
+        
+        // Buscar ou criar contato
+        let contact = await db.getContactByNumber(ctx.user.workspaceId, normalizedNumber);
+        
+        if (!contact) {
+          // Criar novo contato
+          const contactId = await db.createContact({
+            workspaceId: ctx.user.workspaceId,
+            whatsappNumber: normalizedNumber,
+            name: input.name || null,
+            kanbanStatus: "waiting_attendant", // Marcar como aguardando atendente para IA não interferir
+            metadata: { startedByAgent: true }, // Flag para indicar que foi iniciado pelo atendente
+          });
+          contact = await db.getContactByNumber(ctx.user.workspaceId, normalizedNumber);
+        } else {
+          // Atualizar status para waiting_attendant para garantir que IA não interfira
+          await db.updateContactKanbanStatus(contact.id, "waiting_attendant");
+          if (input.name && input.name.trim()) {
+            await db.updateContactName(contact.id, input.name.trim());
+          }
+          // Atualizar metadata
+          await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
+            ...metadata,
+            startedByAgent: true,
+          }));
+        }
+
+        if (!contact) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create or find contact" });
+        }
+
+        // Buscar ou criar conversa
+        let conversation = await db.getConversationByContact(ctx.user.workspaceId, contact.id);
+        
+        if (!conversation) {
+          // Buscar instância ativa
+          const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
+          const activeInstance = instances.find(i => i.status === "connected") || instances[0];
+          
+          if (!activeInstance) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhuma instância WhatsApp conectada" });
+          }
+
+          const conversationId = await db.createConversation({
+            workspaceId: ctx.user.workspaceId,
+            contactId: contact.id,
+            instanceId: activeInstance.id,
+            status: "pending_human", // Status para indicar que é atendimento humano
+          });
+          
+          conversation = await db.getConversationByContact(ctx.user.workspaceId, contact.id);
+        } else {
+          // Atualizar status da conversa para pending_human
+          await db.updateConversationStatus(conversation.id, "pending_human");
+        }
+
+        if (!conversation) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create or find conversation" });
+        }
+
+        return {
+          contactId: contact.id,
+          conversationId: conversation.id,
+          contact,
+        };
+      }),
   }),
 
   conversations: router({

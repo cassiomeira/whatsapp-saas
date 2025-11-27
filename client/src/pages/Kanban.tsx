@@ -19,10 +19,19 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive } from "lucide-react";
+import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 
 type Contact = {
   id: number;
@@ -204,12 +213,17 @@ function DroppableColumn({
 
 export default function Kanban() {
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
+  const [newConversationNumber, setNewConversationNumber] = useState("");
+  const [newConversationName, setNewConversationName] = useState("");
+  const [isStartingConversation, setIsStartingConversation] = useState(false);
 
   const { data: workspace, refetch: refetchWorkspace } = trpc.workspaces.current.useQuery();
   const { data: contacts, refetch } = trpc.contacts.list.useQuery(undefined, {
     refetchInterval: autoRefresh ? 5000 : false,
     refetchOnWindowFocus: true,
   });
+  const startConversationMutation = trpc.contacts.startConversation.useMutation();
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -341,6 +355,40 @@ export default function Kanban() {
     }
   };
 
+  const handleStartNewConversation = async () => {
+    if (!newConversationNumber.trim()) {
+      toast.error("Por favor, informe o número do WhatsApp");
+      return;
+    }
+
+    setIsStartingConversation(true);
+    try {
+      const result = await startConversationMutation.mutateAsync({
+        whatsappNumber: newConversationNumber.trim(),
+        name: newConversationName.trim() || undefined,
+      });
+
+      toast.success("Conversa iniciada com sucesso!");
+      setNewConversationOpen(false);
+      setNewConversationNumber("");
+      setNewConversationName("");
+      
+      // Atualizar lista de contatos
+      const { data: updatedContacts } = await refetch();
+      
+      // Buscar o contato atualizado na lista ou usar o retornado
+      const newContact = updatedContacts?.find(c => c.id === result.contactId) || result.contact;
+      if (newContact) {
+        setSelectedContact(newContact as Contact);
+      }
+    } catch (error: any) {
+      console.error("Erro ao iniciar conversa:", error);
+      toast.error(error?.message || "Erro ao iniciar conversa");
+    } finally {
+      setIsStartingConversation(false);
+    }
+  };
+
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -430,6 +478,10 @@ export default function Kanban() {
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" onClick={() => setAutoRefresh((prev) => !prev)}>
                 {autoRefresh ? "Pausar auto refresh" : "Ativar auto refresh"}
+              </Button>
+              <Button onClick={() => setNewConversationOpen(true)} variant="default">
+                <MessageSquarePlus className="w-4 h-4 mr-2" />
+                Nova Conversa
               </Button>
               <Button onClick={handleAddSellerColumn}>
                 <Plus className="w-4 h-4 mr-2" />
@@ -551,6 +603,62 @@ export default function Kanban() {
             <ChatPanel contactId={selectedContact.id} />
           </div>
         )}
+
+        {/* Dialog para Nova Conversa */}
+        <Dialog open={newConversationOpen} onOpenChange={setNewConversationOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Iniciar Nova Conversa</DialogTitle>
+              <DialogDescription>
+                Digite o número do WhatsApp do cliente para iniciar uma conversa. A IA não irá interferir nesta conversa.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="whatsapp-number">Número do WhatsApp *</Label>
+                <Input
+                  id="whatsapp-number"
+                  placeholder="5511999999999 ou +5511999999999"
+                  value={newConversationNumber}
+                  onChange={(e) => setNewConversationNumber(e.target.value)}
+                  disabled={isStartingConversation}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Digite o número com código do país (ex: 5511999999999)
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="contact-name">Nome do Cliente (opcional)</Label>
+                <Input
+                  id="contact-name"
+                  placeholder="Nome do cliente"
+                  value={newConversationName}
+                  onChange={(e) => setNewConversationName(e.target.value)}
+                  disabled={isStartingConversation}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNewConversationOpen(false);
+                  setNewConversationNumber("");
+                  setNewConversationName("");
+                }}
+                disabled={isStartingConversation}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleStartNewConversation}
+                disabled={isStartingConversation || !newConversationNumber.trim()}
+              >
+                {isStartingConversation ? "Iniciando..." : "Iniciar Conversa"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </DashboardLayout>
     </WorkspaceGuard>
   );
