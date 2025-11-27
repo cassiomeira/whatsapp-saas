@@ -263,13 +263,21 @@ export async function updateWhatsappInstanceStatus(id: number, status: string, p
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   
-  const updateData: any = { status: status as any, updatedAt: new Date() };
-  if (qrCode !== undefined) updateData.qrCode = qrCode;
-  if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
-  
-  await db.update(whatsappInstances)
-    .set(updateData)
-    .where(eq(whatsappInstances.id, id));
+  try {
+    const updateData: any = { status: status as any, updatedAt: new Date() };
+    if (qrCode !== undefined) updateData.qrCode = qrCode;
+    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+    
+    await db.update(whatsappInstances)
+      .set(updateData)
+      .where(eq(whatsappInstances.id, id));
+  } catch (error: any) {
+    console.error(`[DB] Error updating WhatsApp instance ${id} status:`, error);
+    if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {
+      throw new Error("Database is full. Please free up space or use a remote database.");
+    }
+    throw error;
+  }
 }
 
 export async function deleteWhatsappInstance(id: number) {
