@@ -36,16 +36,7 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      // Verificar se DATABASE_URL aponta para /var/data (disk do Render)
-      // Se sim, usar fallback para evitar SQLITE_FULL
-      let dbUrl = process.env.DATABASE_URL;
-      if (dbUrl.includes("/var/data")) {
-        console.warn("[Database] DATABASE_URL aponta para /var/data (disk do Render). Isso pode causar SQLITE_FULL se o disk estiver cheio.");
-        console.warn("[Database] Considere usar um banco remoto ou um local temporário.");
-        // Não alterar automaticamente, apenas avisar
-      }
-      
-      const client = createClient({ url: dbUrl });
+      const client = createClient({ url: process.env.DATABASE_URL });
       _db = drizzle(client);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
@@ -285,7 +276,15 @@ export async function deleteWhatsappInstance(id: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   
-  await db.delete(whatsappInstances).where(eq(whatsappInstances.id, id));
+  try {
+    await db.delete(whatsappInstances).where(eq(whatsappInstances.id, id));
+  } catch (error: any) {
+    console.error(`[DB] Error deleting WhatsApp instance ${id}:`, error);
+    if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {
+      throw new Error("Database is full. Please free up space or use a remote database.");
+    }
+    throw error;
+  }
 }
 
 // Contact functions
@@ -346,9 +345,17 @@ export async function updateContactKanbanStatus(id: number, status: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   
-  await db.update(contacts)
-    .set({ kanbanStatus: status === "negociating" ? "negotiating" : status, updatedAt: new Date() })
-    .where(eq(contacts.id, id));
+  try {
+    await db.update(contacts)
+      .set({ kanbanStatus: status === "negociating" ? "negotiating" : status, updatedAt: new Date() })
+      .where(eq(contacts.id, id));
+  } catch (error: any) {
+    console.error(`[DB] Error updating contact ${id} kanban status:`, error);
+    if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {
+      throw new Error("Database is full. Please free up space or use a remote database.");
+    }
+    throw error;
+  }
 }
 
 export async function updateContactName(id: number, name: string) {
