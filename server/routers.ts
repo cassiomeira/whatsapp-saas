@@ -276,8 +276,19 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        await db.updateContactKanbanStatus(input.contactId, input.status);
-        return { success: true };
+        
+        try {
+          console.log(`[Kanban] Updating contact ${input.contactId} status to ${input.status}`);
+          await db.updateContactKanbanStatus(input.contactId, input.status);
+          console.log(`[Kanban] Successfully updated contact ${input.contactId} status`);
+          return { success: true };
+        } catch (error: any) {
+          console.error(`[Kanban] Error updating contact ${input.contactId} status:`, error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Failed to update contact status: ${error?.message || "Unknown error"}`,
+          });
+        }
       }),
 
     rename: protectedProcedure

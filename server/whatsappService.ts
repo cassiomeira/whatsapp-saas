@@ -19,10 +19,19 @@ if (!fs.existsSync(BASE_SESSIONS_DIR)) {
   fs.mkdirSync(BASE_SESSIONS_DIR, { recursive: true });
 }
 
-const LOCK_FILES = ["SingletonLock", "SingletonCookie", "SingletonStartupLock"];
+const LOCK_FILES = [
+  "SingletonLock",
+  "SingletonCookie",
+  "SingletonStartupLock",
+  "lockfile",
+  "LOCK",
+];
 
 function cleanupChromiumLocks(instanceKey: string) {
   const profileDir = path.join(BASE_SESSIONS_DIR, instanceKey, "Default");
+  const instanceDir = path.join(BASE_SESSIONS_DIR, instanceKey);
+  
+  // Limpar locks no diretório Default
   for (const file of LOCK_FILES) {
     const lockPath = path.join(profileDir, file);
     try {
@@ -33,6 +42,30 @@ function cleanupChromiumLocks(instanceKey: string) {
     } catch (error) {
       console.warn(`[WhatsApp] Failed to remove lock file ${lockPath}:`, error);
     }
+  }
+  
+  // Limpar locks no diretório raiz da instância também
+  for (const file of LOCK_FILES) {
+    const lockPath = path.join(instanceDir, file);
+    try {
+      if (fs.existsSync(lockPath)) {
+        fs.unlinkSync(lockPath);
+        console.log(`[WhatsApp] Removed Chromium lock file: ${lockPath}`);
+      }
+    } catch (error) {
+      console.warn(`[WhatsApp] Failed to remove lock file ${lockPath}:`, error);
+    }
+  }
+  
+  // Tentar remover todo o diretório Default se estiver corrompido (opcional, mais agressivo)
+  try {
+    const singletonLock = path.join(profileDir, "SingletonLock");
+    if (fs.existsSync(singletonLock)) {
+      // Se o SingletonLock ainda existe após tentar remover, pode ser que o diretório esteja corrompido
+      console.warn(`[WhatsApp] SingletonLock still exists for ${instanceKey}, profile may be corrupted`);
+    }
+  } catch (error) {
+    // Ignorar erros aqui
   }
 }
 
@@ -820,20 +853,40 @@ export async function initializeExistingInstances(): Promise<void> {
     const instances = await db.getAllConnectedWhatsappInstances();
     console.log(`[WhatsApp] Found ${instances.length} instances to initialize`);
     
-    // Inicializar cada instância em paralelo (mas com limite para não sobrecarregar)
-    const initPromises = instances.slice(0, 5).map(async (instance) => {
-      if (!instance.instanceKey) return;
+    // PRIMEIRO: Limpar todos os locks de todas as instâncias
+    console.log("[WhatsApp] Cleaning up Chromium locks for all instances...");
+    for (const instance of instances) {
+      if (instance.instanceKey) {
+        try {
+          cleanupChromiumLocks(instance.instanceKey);
+        } catch (error) {
+          console.warn(`[WhatsApp] Error cleaning locks for ${instance.instanceKey}:`, error);
+        }
+      }
+    }
+    
+    // Aguardar um pouco para garantir que os locks foram liberados
+    console.log("[WhatsApp] Waiting 3 seconds for locks to be released...");
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Inicializar cada instância sequencialmente para evitar conflitos
+    for (const instance of instances.slice(0, 5)) {
+      if (!instance.instanceKey) continue;
       
       try {
         console.log(`[WhatsApp] Initializing instance ${instance.instanceKey}...`);
+        // Limpar locks novamente antes de cada inicialização
+        cleanupChromiumLocks(instance.instanceKey);
         await createWhatsAppInstance(instance.instanceKey);
         console.log(`[WhatsApp] Instance ${instance.instanceKey} initialized`);
-      } catch (error) {
-        console.error(`[WhatsApp] Error initializing instance ${instance.instanceKey}:`, error);
+        // Pequeno delay entre inicializações
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (error: any) {
+        console.error(`[WhatsApp] Error initializing instance ${instance.instanceKey}:`, error?.message || error);
+        // Continuar com próxima instância mesmo se esta falhar
       }
-    });
+    }
     
-    await Promise.all(initPromises);
     console.log("[WhatsApp] Finished initializing existing instances");
   } catch (error) {
     console.error("[WhatsApp] Error initializing existing instances:", error);
