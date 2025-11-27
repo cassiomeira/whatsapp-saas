@@ -240,6 +240,12 @@ export async function getWhatsappInstancesByWorkspace(workspaceId: number) {
   return db.select().from(whatsappInstances).where(eq(whatsappInstances.workspaceId, workspaceId));
 }
 
+export async function getAllWhatsappInstances() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(whatsappInstances);
+}
+
 export async function getWhatsappInstanceByKey(instanceKey: string) {
   const db = await getDb();
   if (!db) return undefined;

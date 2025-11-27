@@ -75,6 +75,14 @@ async function startServer() {
   server.listen(port, async () => {
     console.log(`Server running on http://localhost:${port}/`);
     
+    // Limpar disk antes de inicializar (para evitar SQLITE_FULL)
+    try {
+      const { runCleanup } = await import("../cleanupDisk");
+      await runCleanup();
+    } catch (error) {
+      console.warn("[Server] Error running cleanup (non-fatal):", error);
+    }
+    
     // Inicializar instâncias WhatsApp existentes
     try {
       const { initializeExistingInstances } = await import("../whatsappService");
