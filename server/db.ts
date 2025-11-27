@@ -36,7 +36,16 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      const client = createClient({ url: process.env.DATABASE_URL });
+      // Verificar se DATABASE_URL aponta para /var/data (disk do Render)
+      // Se sim, usar fallback para evitar SQLITE_FULL
+      let dbUrl = process.env.DATABASE_URL;
+      if (dbUrl.includes("/var/data")) {
+        console.warn("[Database] DATABASE_URL aponta para /var/data (disk do Render). Isso pode causar SQLITE_FULL se o disk estiver cheio.");
+        console.warn("[Database] Considere usar um banco remoto ou um local temporário.");
+        // Não alterar automaticamente, apenas avisar
+      }
+      
+      const client = createClient({ url: dbUrl });
       _db = drizzle(client);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);

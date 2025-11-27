@@ -11,7 +11,9 @@ const Client = wweb.Client as typeof WhatsAppClient;
 const Message = wweb.Message as typeof WhatsAppMessage;
 const LocalAuth = wweb.LocalAuth;
 
-const BASE_SESSIONS_DIR = process.env.WHATSAPP_SESSIONS_DIR
+// NÃO usar /var/data (disk do Render) - usar diretório temporário do container
+// O disk do Render está enchendo e causando SQLITE_FULL
+const BASE_SESSIONS_DIR = process.env.WHATSAPP_SESSIONS_DIR && !process.env.WHATSAPP_SESSIONS_DIR.includes("/var/data")
   ? path.resolve(process.env.WHATSAPP_SESSIONS_DIR)
   : path.resolve(process.cwd(), "data", "whatsapp-sessions");
 
