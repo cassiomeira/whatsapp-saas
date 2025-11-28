@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/sidebar";
 import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, LogOut, PanelLeft, Users, MessageSquare, Bot, Workflow, BarChart3, Settings, PhoneCall, Megaphone, UserCog, Package, Sun, Moon } from "lucide-react";
+import { LayoutDashboard, LogOut, PanelLeft, Users, MessageSquare, Bot, Workflow, BarChart3, Settings, PhoneCall, Megaphone, UserCog, Package, Sun, Moon, HardDrive } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
@@ -46,6 +46,7 @@ const getMenuItems = (userRole?: string | null) => {
     items.push({ icon: UserCog, label: "Usuários", path: "/users" });
   }
   
+  items.push({ icon: HardDrive, label: "Armazenamento", path: "/storage" });
   items.push({ icon: Settings, label: "Configurações", path: "/settings" });
   
   return items;

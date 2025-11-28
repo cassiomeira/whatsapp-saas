@@ -17,9 +17,9 @@ import {
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus } from "lucide-react";
+import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus, Paperclip, Mic, StopCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,6 +32,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
 type Contact = {
   id: number;
@@ -667,7 +669,17 @@ export default function Kanban() {
 // Componente de Chat
 function ChatPanel({ contactId }: { contactId: number }) {
   const [message, setMessage] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [filePreview, setFilePreview] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isFFmpegLoading, setIsFFmpegLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const ffmpegRef = useRef<FFmpeg | null>(null);
+  const ffmpegLoadPromiseRef = useRef<Promise<FFmpeg | null> | null>(null);
+  
   const { data: conversations } = trpc.conversations.list.useQuery();
   const conversation = conversations?.find(c => c.contactId === contactId);
   const { data: messages, refetch } = trpc.messages.list.useQuery(
@@ -675,25 +687,399 @@ function ChatPanel({ contactId }: { contactId: number }) {
     { enabled: !!conversation?.id, refetchInterval: 3000 } // Atualiza a cada 3 segundos
   );
   const sendMessage = trpc.messages.send.useMutation();
+  const uploadMedia = trpc.messages.uploadMedia.useMutation();
 
   // Scroll automático para a última mensagem
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      if (file.type.startsWith("image/")) {
+        setFilePreview(URL.createObjectURL(file));
+      } else if (file.type.startsWith("audio/")) {
+        setFilePreview(URL.createObjectURL(file));
+      } else if (file.type.startsWith("video/")) {
+        setFilePreview(URL.createObjectURL(file));
+      }
+    }
+  };
+
+  const removeFile = () => {
+    if (filePreview) URL.revokeObjectURL(filePreview);
+    setSelectedFile(null);
+    setFilePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const loadFFmpeg = useCallback(async (): Promise<FFmpeg | null> => {
+    if (ffmpegRef.current) {
+      console.log("[Audio] FFmpeg já está carregado, reutilizando instância");
+      return ffmpegRef.current;
+    }
+
+    if (ffmpegLoadPromiseRef.current) {
+      console.log("[Audio] FFmpeg já está sendo carregado, aguardando...");
+      return ffmpegLoadPromiseRef.current;
+    }
+
+    const loadPromise = (async () => {
+      setIsFFmpegLoading(true);
+      try {
+        console.log("[Audio] Criando nova instância FFmpeg...");
+        const instance = new FFmpeg();
+        
+        console.log("[Audio] Preparando URLs dos arquivos WASM...");
+        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+        
+        console.log("[Audio] Convertendo ffmpeg-core.js para blob URL...");
+        const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
+        console.log("[Audio] ffmpeg-core.js convertido:", coreURL.substring(0, 50) + "...");
+        
+        console.log("[Audio] Convertendo ffmpeg-core.wasm para blob URL...");
+        const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
+        console.log("[Audio] ffmpeg-core.wasm convertido:", wasmURL.substring(0, 50) + "...");
+        
+        console.log("[Audio] Carregando FFmpeg WASM (isso pode levar alguns segundos)...");
+        const loadStartTime = Date.now();
+        
+        // Timeout de 60 segundos para o carregamento
+        const loadTimeout = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("Timeout: carregamento do FFmpeg demorou mais de 60 segundos")), 60000);
+        });
+        
+        await Promise.race([
+          instance.load({ coreURL, wasmURL }),
+          loadTimeout
+        ]);
+        
+        const loadDuration = Date.now() - loadStartTime;
+        console.log(`[Audio] FFmpeg WASM carregado com sucesso em ${loadDuration}ms`);
+        
+        ffmpegRef.current = instance;
+        return instance;
+      } catch (error: any) {
+        console.error("[Audio] Falha ao carregar FFmpeg WASM:", error);
+        console.error("[Audio] Erro detalhado:", error.message);
+        console.error("[Audio] Stack:", error.stack);
+        
+        const errorMessage = error?.message || "Erro desconhecido";
+        if (errorMessage.includes("Timeout")) {
+          toast.error("Carregamento do conversor demorou muito. Verifique sua conexão e tente novamente.");
+        } else {
+          toast.error("Falha ao carregar o conversor de áudio (FFmpeg). Tente novamente.");
+        }
+        return null;
+      } finally {
+        setIsFFmpegLoading(false);
+        ffmpegLoadPromiseRef.current = null;
+      }
+    })();
+
+    ffmpegLoadPromiseRef.current = loadPromise;
+    return loadPromise;
+  }, []);
+
+  const convertWebMToOGG = async (webmFile: File): Promise<Blob | null> => {
+    try {
+      console.log("[Audio] Iniciando conversão WebM para OGG/Opus com FFmpeg...");
+      console.log("[Audio] Arquivo original:", {
+        name: webmFile.name,
+        size: webmFile.size,
+        type: webmFile.type
+      });
+
+      console.log("[Audio] Carregando FFmpeg...");
+      const ffmpeg = await loadFFmpeg();
+      if (!ffmpeg) {
+        throw new Error("FFmpeg não está disponível");
+      }
+      console.log("[Audio] FFmpeg carregado com sucesso");
+
+      const inputName = `input-${Date.now()}.webm`;
+      const outputName = `output-${Date.now()}.ogg`;
+
+      console.log("[Audio] Lendo arquivo WebM...");
+      const fileData = await fetchFile(webmFile);
+      console.log("[Audio] Arquivo lido, tamanho:", fileData.byteLength, "bytes");
+
+      console.log("[Audio] Escrevendo arquivo temporário no FFmpeg...");
+      await ffmpeg.writeFile(inputName, fileData);
+      console.log("[Audio] Arquivo temporário escrito");
+
+      console.log("[Audio] Executando conversão FFmpeg...");
+      const execPromise = ffmpeg.exec([
+        "-i",
+        inputName,
+        "-vn",
+        "-ac",
+        "1",
+        "-c:a",
+        "libopus",
+        "-b:a",
+        "64000",
+        "-compression_level",
+        "10",
+        "-f",
+        "ogg",
+        outputName,
+      ]);
+
+      // Timeout de 30 segundos para a conversão
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Timeout: conversão demorou mais de 30 segundos")), 30000);
+      });
+
+      await Promise.race([execPromise, timeoutPromise]);
+      console.log("[Audio] Conversão FFmpeg concluída");
+
+      console.log("[Audio] Lendo arquivo OGG convertido...");
+      const data = await ffmpeg.readFile(outputName);
+      console.log("[Audio] Arquivo OGG lido, tamanho:", data.byteLength, "bytes");
+
+      try {
+        await ffmpeg.deleteFile(inputName);
+        await ffmpeg.deleteFile(outputName);
+        console.log("[Audio] Arquivos temporários removidos");
+      } catch (cleanupError) {
+        console.warn("[Audio] Erro ao limpar arquivos temporários:", cleanupError);
+        // Ignorar erros ao limpar arquivos temporários
+      }
+
+      const oggBlob = new Blob([data], { type: "audio/ogg" });
+      console.log("[Audio] Blob OGG criado, tamanho:", oggBlob.size, "bytes");
+
+      if (oggBlob.size === 0) {
+        throw new Error("Arquivo OGG acabou vazio após conversão");
+      }
+
+      console.log("[Audio] Conversão para OGG concluída com sucesso:", {
+        original: webmFile.size,
+        converted: oggBlob.size,
+        ratio: ((oggBlob.size / webmFile.size) * 100).toFixed(1) + "%"
+      });
+
+      return oggBlob;
+    } catch (error: any) {
+      console.error("[Audio] Erro ao converter WebM para OGG:", error);
+      console.error("[Audio] Erro detalhado:", error.message);
+      console.error("[Audio] Stack:", error.stack);
+      return null;
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Verificar formatos suportados e priorizar OGG (compatível com WhatsApp)
+      const supportedFormats = [
+        { mime: "audio/ogg; codecs=opus", ext: "ogg", name: "OGG Opus" },
+        { mime: "audio/webm; codecs=opus", ext: "webm", name: "WebM Opus" },
+        { mime: "audio/webm", ext: "webm", name: "WebM" },
+        { mime: "audio/mp4", ext: "m4a", name: "MP4" },
+      ];
+      
+      let selectedFormat = supportedFormats.find(f => MediaRecorder.isTypeSupported(f.mime));
+      
+      if (!selectedFormat) {
+        // Fallback: usar o formato padrão do navegador
+        selectedFormat = { mime: "", ext: "webm", name: "WebM (padrão)" };
+      }
+      
+      console.log(`[Audio] Formatos suportados:`, supportedFormats.map(f => ({
+        format: f.name,
+        supported: MediaRecorder.isTypeSupported(f.mime)
+      })));
+      console.log(`[Audio] Usando formato: ${selectedFormat.name} (${selectedFormat.mime})`);
+      
+      const options: MediaRecorderOptions = {};
+      if (selectedFormat.mime) {
+        options.mimeType = selectedFormat.mime;
+      }
+      
+      const recorder = new MediaRecorder(stream, options);
+      audioChunksRef.current = [];
+      
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+      
+      recorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: selectedFormat.mime || "audio/webm" });
+        
+        // Criar arquivo imediatamente sem conversão (não travar a UI)
+        const file = new File([audioBlob], `audio-${Date.now()}.${selectedFormat.ext}`, { 
+          type: selectedFormat.mime || "audio/webm" 
+        });
+        setSelectedFile(file);
+        setFilePreview(URL.createObjectURL(file));
+        setIsRecording(false);
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Informar sobre o formato gravado
+        if (selectedFormat.ext === "ogg") {
+          toast.success("Áudio gravado em OGG (formato compatível com WhatsApp)!");
+        } else if (selectedFormat.ext === "webm") {
+          toast.warning("Áudio gravado em WebM. Será convertido para OGG ao enviar.");
+        } else {
+          toast.info(`Áudio gravado em ${selectedFormat.name}`);
+        }
+      };
+      
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+      
+      // Mostrar qual formato está sendo usado
+      toast.info(`Gravando em ${selectedFormat.name}...`);
+    } catch (error) {
+      toast.error("Erro ao iniciar gravação de áudio");
+      console.error("Error starting audio recording:", error);
+    }
+  };
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+  };
+
   const handleSend = async () => {
-    if (!message.trim() || !conversation) return;
+    if (!conversation) return;
+    if (!message.trim() && !selectedFile) {
+      toast.error("Digite uma mensagem ou selecione um arquivo.");
+      return;
+    }
 
     try {
-      await sendMessage.mutateAsync({
+      let mediaUrl: string | undefined = undefined;
+      let mediaType: "image" | "audio" | "video" | "document" | undefined = undefined;
+      let caption = message.trim();
+
+      // Se houver arquivo, fazer upload primeiro
+      if (selectedFile) {
+        let fileToUpload = selectedFile;
+        let finalMediaType = mediaType; // Variável para controlar o tipo final
+        
+        // Detectar se é WebM (por tipo MIME ou extensão)
+        const isWebM = selectedFile.type.includes('webm') || 
+                       selectedFile.name.toLowerCase().endsWith('.webm') ||
+                       selectedFile.name.toLowerCase().includes('webm');
+        
+        // Se for áudio WebM, converter para OGG (compatível com WhatsApp)
+        if (selectedFile.type.includes('audio') && isWebM) {
+          console.log("[Audio] Detectado WebM, iniciando conversão...", {
+            fileName: selectedFile.name,
+            fileType: selectedFile.type,
+            fileSize: selectedFile.size
+          });
+          
+          if (isFFmpegLoading) {
+            toast.info("Carregando conversor de áudio (FFmpeg WASM ~7MB, primeira vez pode demorar)...");
+          } else {
+            toast.info("Convertendo áudio WebM para OGG (pode levar 10-30 segundos)...");
+          }
+          
+          try {
+            const convertedBlob = await convertWebMToOGG(selectedFile);
+            
+            if (convertedBlob && convertedBlob.size > 0) {
+              fileToUpload = new File([convertedBlob], selectedFile.name.replace(/\.webm$/i, '.ogg'), { 
+                type: 'audio/ogg' 
+              });
+              finalMediaType = "audio"; // Enviar como áudio OGG
+              toast.success("Áudio convertido para OGG com sucesso!");
+              console.log("[Audio] Arquivo convertido:", {
+                original: selectedFile.name,
+                converted: fileToUpload.name,
+                originalSize: selectedFile.size,
+                convertedSize: fileToUpload.size
+              });
+            } else {
+              // Se falhar, NÃO enviar - WebM não funciona no WhatsApp
+              console.error("[Audio] Conversão retornou null ou arquivo vazio");
+              toast.error("Conversão falhou. WebM não é compatível com WhatsApp. Tente gravar ou converter novamente.");
+              throw new Error("Conversão falhou: arquivo vazio ou null");
+            }
+          } catch (error: any) {
+            console.error("[Audio] Erro na conversão:", error);
+            console.error("[Audio] Stack:", error?.stack);
+            
+            const errorMessage = error?.message || "Erro desconhecido";
+            if (errorMessage.includes("Timeout")) {
+              toast.error("Conversão demorou muito. O arquivo pode ser muito grande. Tente gravar um áudio mais curto.");
+            } else {
+              toast.error(`Erro na conversão: ${errorMessage}. WebM não é compatível com WhatsApp. Tente gravar novamente.`);
+            }
+            throw error; // Impede o envio
+          }
+        } else if (selectedFile.type.includes('audio') && !isWebM) {
+          // Se for outro formato de áudio (não WebM), tentar enviar como áudio
+          console.log("[Audio] Formato de áudio não-WebM detectado:", selectedFile.type);
+          finalMediaType = "audio";
+        }
+        
+        // Usar o tipo final determinado acima
+        mediaType = finalMediaType;
+        
+        const reader = new FileReader();
+        reader.readAsDataURL(fileToUpload);
+        
+        await new Promise<void>((resolve, reject) => {
+          reader.onloadend = async () => {
+            try {
+              const base64Data = (reader.result as string).split(",")[1];
+              const uploadResult = await uploadMedia.mutateAsync({
+                fileName: fileToUpload.name,
+                fileType: fileToUpload.type,
+                fileSize: fileToUpload.size,
+                fileData: base64Data,
+              });
+              
+              mediaUrl = uploadResult.mediaUrl;
+              // IMPORTANTE: Preservar o mediaType escolhido (document para áudios)
+              // Se foi definido como "document", manter como "document"
+              if (finalMediaType) {
+                mediaType = finalMediaType;
+              } else {
+                mediaType = uploadResult.mediaType;
+              }
+              console.log(`[Messages] Tipo de mídia final: ${mediaType} (escolhido: ${finalMediaType || "auto"})`);
+              resolve();
+            } catch (uploadError) {
+              reject(uploadError);
+            }
+          };
+          reader.onerror = (error) => reject(error);
+        });
+      }
+
+      // Enviar mensagem
+      // Só enviar mediaUrl e mediaType se realmente houver mídia
+      const messagePayload: any = {
         conversationId: conversation.id,
-        content: message,
-      });
+        content: caption || undefined,
+        caption: caption || undefined,
+      };
+      
+      // Só adicionar mídia se houver arquivo
+      if (mediaUrl && mediaType) {
+        messagePayload.mediaUrl = mediaUrl;
+        messagePayload.mediaType = mediaType;
+      }
+      
+      await sendMessage.mutateAsync(messagePayload);
+      
       setMessage("");
+      removeFile();
       refetch();
-      // Toast removido para não atrapalhar digitação
     } catch (error) {
-      toast.error("Erro ao enviar mensagem");
+      toast.error("Erro ao enviar mensagem/mídia");
+      console.error("Error sending message/media:", error);
     }
   };
 
@@ -724,7 +1110,49 @@ function ChatPanel({ contactId }: { contactId: number }) {
                       : "bg-primary text-primary-foreground"
                   }`}
                 >
-                  <p className="text-sm">{msg.content}</p>
+                  {/* Exibir mídia se houver */}
+                  {msg.mediaUrl && msg.messageType === "image" && (
+                    <img 
+                      src={msg.mediaUrl} 
+                      alt="Imagem" 
+                      className="max-w-full h-auto rounded-md mb-2 max-h-64 object-cover" 
+                    />
+                  )}
+                  {msg.mediaUrl && msg.messageType === "audio" && (
+                    <audio 
+                      controls 
+                      src={msg.mediaUrl} 
+                      className="w-full mb-2"
+                      style={{ maxWidth: "300px" }}
+                    />
+                  )}
+                  {msg.mediaUrl && msg.messageType === "video" && (
+                    <video 
+                      controls 
+                      src={msg.mediaUrl} 
+                      className="max-w-full h-auto rounded-md mb-2 max-h-64"
+                    />
+                  )}
+                  {msg.mediaUrl && msg.messageType === "document" && (
+                    <div className="mb-2 flex items-center gap-2">
+                      <Paperclip className="w-4 h-4" />
+                      <a 
+                        href={msg.mediaUrl} 
+                        target="_blank" 
+                        rel="noopener noreferrer" 
+                        className="underline hover:opacity-80"
+                      >
+                        {msg.content || "Documento"}
+                      </a>
+                    </div>
+                  )}
+                  
+                  {/* Exibir texto se houver (e não for apenas placeholder de mídia) */}
+                  {msg.content && 
+                   !(msg.mediaUrl && (msg.content === "[audio]" || msg.content === "[image]" || msg.content === "[video]" || msg.content === "[document]")) && (
+                    <p className="text-sm">{msg.content}</p>
+                  )}
+                  
                   <p className="text-xs opacity-70 mt-1">
                     {new Date(msg.sentAt).toLocaleTimeString("pt-BR", {
                       hour: "2-digit",
@@ -741,6 +1169,30 @@ function ChatPanel({ contactId }: { contactId: number }) {
 
       {/* Input de mensagem */}
       <div className="p-4 border-t flex-shrink-0">
+        {/* Preview de arquivo selecionado */}
+        {selectedFile && (
+          <div className="relative p-2 border rounded-md mb-2 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {selectedFile.type.startsWith("image/") && filePreview && (
+                <img src={filePreview} alt="Preview" className="w-12 h-12 object-cover rounded-md" />
+              )}
+              {selectedFile.type.startsWith("audio/") && filePreview && (
+                <audio controls src={filePreview} className="w-32" />
+              )}
+              {selectedFile.type.startsWith("video/") && filePreview && (
+                <video controls src={filePreview} className="w-32 h-12 object-cover rounded-md" />
+              )}
+              {!selectedFile.type.startsWith("image/") && !selectedFile.type.startsWith("audio/") && !selectedFile.type.startsWith("video/") && (
+                <Paperclip className="w-5 h-5 text-muted-foreground" />
+              )}
+              <span className="text-sm truncate">{selectedFile.name}</span>
+            </div>
+            <Button variant="ghost" size="icon" onClick={removeFile}>
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        )}
+        
         <div className="flex gap-2">
           <Input
             placeholder="Digite sua mensagem..."
@@ -752,8 +1204,42 @@ function ChatPanel({ contactId }: { contactId: number }) {
                 handleSend();
               }
             }}
+            disabled={isRecording}
           />
-          <Button size="icon" onClick={handleSend} disabled={!message.trim()}>
+          <input
+            type="file"
+            ref={fileInputRef}
+            className="hidden"
+            onChange={handleFileChange}
+            accept="image/*,audio/*,video/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
+          />
+          <Button 
+            size="icon" 
+            variant="outline" 
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isRecording}
+          >
+            <Paperclip className="w-4 h-4" />
+          </Button>
+          {isRecording ? (
+            <Button size="icon" variant="destructive" onClick={stopRecording}>
+              <StopCircle className="w-4 h-4" />
+            </Button>
+          ) : (
+            <Button 
+              size="icon" 
+              variant="outline" 
+              onClick={startRecording}
+              disabled={selectedFile !== null}
+            >
+              <Mic className="w-4 h-4" />
+            </Button>
+          )}
+          <Button 
+            size="icon" 
+            onClick={handleSend} 
+            disabled={(!message.trim() && !selectedFile) || isRecording}
+          >
             <Send className="w-4 h-4" />
           </Button>
         </div>

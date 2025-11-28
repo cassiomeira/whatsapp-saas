@@ -14,6 +14,7 @@ import BotConfig from "./pages/BotConfig";
 import Flows from "./pages/Flows";
 import Campaigns from "./pages/Campaigns";
 import Settings from "./pages/Settings";
+import Storage from "./pages/Storage";
 import Onboarding from "./pages/Onboarding";
 import UserManagement from "./pages/UserManagement";
 import PendingApproval from "./pages/PendingApproval";
@@ -36,6 +37,7 @@ function Router() {
       <Route path={"/flows"} component={Flows} />
       <Route path={"/campaigns"} component={Campaigns} />
       <Route path={"/settings"} component={Settings} />
+      <Route path={"/storage"} component={Storage} />
       <Route path={"/users"} component={UserManagement} />
       <Route path={"/pending"} component={PendingApproval} />
       <Route path={"/404"} component={NotFound} />

@@ -9,6 +9,7 @@ import { getEvolutionService } from "./evolutionService";
 import { TRPCError } from "@trpc/server";
 import { parse } from "csv-parse/sync";
 import type { InsertProduct, Contact } from "../drizzle/schema";
+import { createClient } from "@supabase/supabase-js";
 
 const MAX_UPLOAD_ERRORS = 10;
 
@@ -467,31 +468,140 @@ export const appRouter = router({
         return db.getMessagesByConversation(input.conversationId);
       }),
 
-    // Enviar mensagem
+    // Upload de mídia (usando Supabase Storage)
+    uploadMedia: protectedProcedure
+      .input(z.object({
+        fileName: z.string(),
+        fileType: z.string(),
+        fileSize: z.number(),
+        fileData: z.string(), // base64
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        const buffer = Buffer.from(input.fileData, "base64");
+        const extension = input.fileName.split('.').pop()?.toLowerCase() || '';
+        let mediaType: "image" | "audio" | "video" | "document" = "document";
+        
+        if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension)) {
+          mediaType = "image";
+        } else if (['mp3', 'ogg', 'wav', 'm4a', 'opus', 'webm'].includes(extension)) {
+          mediaType = "audio";
+        } else if (['mp4', 'webm', 'mov', 'avi'].includes(extension)) {
+          mediaType = "video";
+        }
+
+        const contentType = input.fileType || `application/octet-stream`;
+        let mediaUrl: string | undefined;
+
+        // Usar Supabase Storage
+        const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+        
+        if (supabaseUrl && supabaseKey) {
+          try {
+            const supabase = createClient(supabaseUrl, supabaseKey);
+            const bucketName = "whatsapp-media";
+            
+            // Verificar se o bucket existe, criar se não existir
+            const { data: buckets } = await supabase.storage.listBuckets();
+            const bucketExists = buckets?.some(b => b.name === bucketName);
+            
+            if (!bucketExists) {
+              console.log(`[Messages] Creating Supabase Storage bucket: ${bucketName}`);
+              const { error: createError } = await supabase.storage.createBucket(bucketName, {
+                public: true,
+                fileSizeLimit: 50 * 1024 * 1024, // 50MB
+              });
+              if (createError && !createError.message.includes("already exists")) {
+                console.error("[Messages] Failed to create bucket:", createError);
+                throw createError;
+              }
+            }
+            
+            const filePath = `workspaces/${ctx.user.workspaceId}/media/${Date.now()}-${input.fileName}`;
+            const { data, error } = await supabase.storage
+              .from(bucketName)
+              .upload(filePath, buffer, {
+                contentType,
+                upsert: false,
+              });
+            
+            if (error) {
+              console.error("[Messages] Supabase Storage upload error:", error);
+              throw error;
+            }
+            
+            const { data: urlData } = supabase.storage
+              .from(bucketName)
+              .getPublicUrl(filePath);
+            
+            console.log(`[Messages] Media uploaded to Supabase Storage: ${urlData.publicUrl}`);
+            return { mediaUrl: urlData.publicUrl, mediaType, fileName: input.fileName };
+          } catch (supabaseError: any) {
+            console.error("[Messages] Supabase Storage failed:", supabaseError.message || supabaseError);
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `Failed to upload media: ${supabaseError.message || "Unknown error"}`,
+            });
+          }
+        } else {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Supabase Storage not configured. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+          });
+        }
+      }),
+
+    // Enviar mensagem (texto ou mídia)
     send: protectedProcedure
       .input(z.object({
         conversationId: z.number(),
-        content: z.string(),
+        content: z.string().optional(), // Opcional se houver mídia
         messageType: z.string().default("text"),
+        mediaUrl: z.string().optional(),
+        mediaType: z.enum(["image", "audio", "video", "document"]).optional(),
+        caption: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        if (!input.content && !input.mediaUrl) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Message content or media is required" });
+        }
+
         // Salvar mensagem no banco
         const messageId = await db.createMessage({
           conversationId: input.conversationId,
           senderType: "agent",
           senderId: ctx.user.id,
-          content: input.content,
-          messageType: input.messageType,
+          content: input.content || input.caption || `[${input.mediaType || 'arquivo'}]`,
+          messageType: input.mediaType || input.messageType,
+          mediaUrl: input.mediaUrl,
         });
 
         // Buscar conversa para pegar o contato
+        console.log(`[Messages] Looking for conversation ${input.conversationId} in workspace ${ctx.user.workspaceId}`);
         const conversations = await db.getConversationsByWorkspace(ctx.user.workspaceId!);
         const conversation = conversations.find(c => c.id === input.conversationId);
+        
+        console.log(`[Messages] Conversation found:`, conversation ? {
+          id: conversation.id,
+          contactId: conversation.contactId,
+          instanceId: conversation.instanceId,
+          status: conversation.status
+        } : "NOT FOUND");
         
         if (conversation) {
           // Buscar contato
           const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId!);
           const contact = contacts.find(c => c.id === conversation.contactId);
+          
+          console.log(`[Messages] Contact found:`, contact ? {
+            id: contact.id,
+            whatsappNumber: contact.whatsappNumber,
+            name: contact.name
+          } : "NOT FOUND");
           
           if (contact) {
             await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
@@ -500,29 +610,86 @@ export const appRouter = router({
             }));
             // Buscar instância WhatsApp
             const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId!);
-            const instance = instances.find(i => i.id === conversation.instanceId);
+            console.log(`[Messages] Found ${instances.length} instances for workspace ${ctx.user.workspaceId}, looking for instanceId: ${conversation.instanceId}`);
+            console.log(`[Messages] Available instances:`, instances.map(i => ({ id: i.id, instanceKey: i.instanceKey, status: i.status })));
+            
+            let instance = instances.find(i => i.id === conversation.instanceId);
+            
+            // Se a instância da conversa não existir, tentar usar a primeira instância conectada
+            if (!instance || !instance.instanceKey) {
+              console.warn(`[Messages] Instance ${conversation.instanceId} not found or invalid, trying to use first connected instance`);
+              instance = instances.find(i => i.instanceKey && (i.status === "connected" || i.status === "connecting"));
+              
+              if (instance) {
+                console.log(`[Messages] Using fallback instance: ${instance.instanceKey} (ID: ${instance.id})`);
+                // Atualizar a conversa para usar a instância correta
+                try {
+                  await db.updateConversationStatus(conversation.id, conversation.status, undefined);
+                  // Nota: updateConversationStatus não atualiza instanceId, mas pelo menos logamos
+                  console.log(`[Messages] Note: Conversation still references old instanceId ${conversation.instanceId}, but using ${instance.id} for sending`);
+                } catch (updateError) {
+                  console.warn(`[Messages] Could not update conversation instance reference:`, updateError);
+                }
+              }
+            } else {
+              console.log(`[Messages] Using conversation's instance: ${instance.instanceKey} (ID: ${instance.id}, status: ${instance.status})`);
+            }
             
             if (instance && instance.instanceKey) {
-              // Enviar mensagem via WhatsApp
+              // Enviar mensagem/mídia via WhatsApp
               try {
-                console.log(`[Messages] Attempting to send message from app:`, {
-                  instanceKey: instance.instanceKey,
-                  whatsappNumber: contact.whatsappNumber,
-                  content: input.content.substring(0, 50),
-                });
+                const { sendTextMessage, sendMediaMessage } = await import("./whatsappService");
                 
-                const { sendTextMessage } = await import("./whatsappService");
-                await sendTextMessage(
-                  instance.instanceKey,
-                  contact.whatsappNumber,
-                  input.content
-                );
-                
-                console.log(`[Messages] Mensagem do atendente enviada com sucesso para ${contact.whatsappNumber}`);
-              } catch (error: any) {
-                console.error(`[Messages] Erro ao enviar mensagem via WhatsApp:`, error);
+                if (input.mediaUrl && input.mediaType) {
+                  console.log(`[Messages] Attempting to send media from app:`, {
+                    instanceKey: instance.instanceKey,
+                    whatsappNumber: contact.whatsappNumber,
+                    mediaType: input.mediaType,
+                    mediaUrl: input.mediaUrl,
+                  });
+                  
+                  await sendMediaMessage(
+                    instance.instanceKey,
+                    contact.whatsappNumber,
+                    input.mediaUrl,
+                    input.mediaType,
+                    input.caption || input.content
+                  );
+                  
+                  console.log(`[Messages] Mídia do atendente enviada com sucesso para ${contact.whatsappNumber}`);
+                } else if (input.content) {
+                  console.log(`[Messages] Attempting to send message from app:`, {
+                    instanceKey: instance.instanceKey,
+                    whatsappNumber: contact.whatsappNumber,
+                    content: input.content.substring(0, 50),
+                  });
+                  
+                  await sendTextMessage(
+                    instance.instanceKey,
+                    contact.whatsappNumber,
+                    input.content
+                  );
+                  
+                  console.log(`[Messages] Mensagem do atendente enviada com sucesso para ${contact.whatsappNumber}`);
+                }
+                } catch (error: any) {
+                console.error(`[Messages] Erro ao enviar mensagem/mídia via WhatsApp:`, error);
                 console.error(`[Messages] Error stack:`, error?.stack);
-                // Não lança erro para não bloquear o salvamento
+                
+                // Mensagem de erro mais específica
+                let errorMessage = `Failed to send message/media: ${error.message}`;
+                
+                // Erro de conexão do WhatsApp
+                if (error.message.includes('not connected') || error.message.includes('state: null')) {
+                  errorMessage = `A instância WhatsApp não está conectada. Por favor, verifique se a instância está online e conectada ao WhatsApp.`;
+                } else if (input.mediaType === 'audio' && error.message.includes('Evaluation failed')) {
+                  errorMessage = `Falha ao enviar áudio: O WhatsApp Web não suporta o formato WebM. Por favor, tente gravar em outro formato (MP3, OGG) ou envie uma imagem/vídeo para testar.`;
+                }
+                
+                throw new TRPCError({
+                  code: "INTERNAL_SERVER_ERROR",
+                  message: errorMessage,
+                });
               }
             } else {
               console.error(`[Messages] Instance not found or invalid:`, {
@@ -530,11 +697,240 @@ export const appRouter = router({
                 instance: instance ? "found" : "not found",
                 instanceKey: instance?.instanceKey || "missing",
               });
+              
+              throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Instância WhatsApp não encontrada ou inválida (ID: ${conversation.instanceId}). Verifique se a instância está configurada corretamente.`,
+              });
+            }
+          } else {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Contato não encontrado para esta conversa.",
+            });
+          }
+        } else {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Conversa não encontrada.",
+          });
+        }
+
+        return { messageId };
+      }),
+  }),
+
+  storage: router({
+    // Obter estatísticas do storage
+    getStats: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user.workspaceId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+      }
+
+      const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseKey) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Supabase Storage not configured",
+        });
+      }
+
+      try {
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        const bucketName = "whatsapp-media";
+        const workspacePath = `workspaces/${ctx.user.workspaceId}/media/`;
+
+        // Listar todos os arquivos do workspace
+        const { data: files, error } = await supabase.storage
+          .from(bucketName)
+          .list(workspacePath, {
+            limit: 10000,
+            sortBy: { column: "created_at", order: "desc" },
+          });
+
+        if (error) {
+          console.error("[Storage] Error listing files:", error);
+          throw error;
+        }
+
+        // Calcular tamanho total e contar arquivos
+        let totalSize = 0;
+        let fileCount = 0;
+        const filesByType: Record<string, { count: number; size: number }> = {
+          audio: { count: 0, size: 0 },
+          image: { count: 0, size: 0 },
+          video: { count: 0, size: 0 },
+          document: { count: 0, size: 0 },
+        };
+
+        if (files && files.length > 0) {
+          // O Supabase Storage retorna o tamanho no campo metadata.size
+          for (const file of files) {
+            // O tamanho pode estar em metadata.size ou em size diretamente
+            const size = (file.metadata as any)?.size || (file as any).size || 0;
+            
+            if (size > 0) {
+              totalSize += size;
+              fileCount++;
+
+              // Classificar por tipo
+              const ext = file.name.split('.').pop()?.toLowerCase() || '';
+              if (['mp3', 'ogg', 'wav', 'm4a', 'opus', 'webm'].includes(ext)) {
+                filesByType.audio.count++;
+                filesByType.audio.size += size;
+              } else if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+                filesByType.image.count++;
+                filesByType.image.size += size;
+              } else if (['mp4', 'webm', 'mov', 'avi'].includes(ext)) {
+                filesByType.video.count++;
+                filesByType.video.size += size;
+              } else {
+                filesByType.document.count++;
+                filesByType.document.size += size;
+              }
             }
           }
         }
 
-        return { messageId };
+        // Limite do plano Free: 1 GB = 1073741824 bytes
+        const limitBytes = 1073741824;
+        const usagePercent = (totalSize / limitBytes) * 100;
+
+        return {
+          totalSize,
+          totalSizeMB: (totalSize / (1024 * 1024)).toFixed(2),
+          totalSizeGB: (totalSize / (1024 * 1024 * 1024)).toFixed(4),
+          fileCount,
+          limitBytes,
+          limitGB: 1,
+          usagePercent: usagePercent.toFixed(2),
+          filesByType,
+        };
+      } catch (error: any) {
+        console.error("[Storage] Error getting stats:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Failed to get storage stats: ${error.message || "Unknown error"}`,
+        });
+      }
+    }),
+
+    // Limpar arquivos antigos
+    cleanup: protectedProcedure
+      .input(z.object({
+        olderThanDays: z.number().min(1).max(365).default(30),
+        fileTypes: z.array(z.enum(["audio", "image", "video", "document"])).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+        if (!supabaseUrl || !supabaseKey) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Supabase Storage not configured",
+          });
+        }
+
+        try {
+          const supabase = createClient(supabaseUrl, supabaseKey);
+          const bucketName = "whatsapp-media";
+          const workspacePath = `workspaces/${ctx.user.workspaceId}/media/`;
+
+          // Data limite (arquivos mais antigos que isso serão deletados)
+          const cutoffDate = new Date();
+          cutoffDate.setDate(cutoffDate.getDate() - input.olderThanDays);
+
+          // Listar todos os arquivos
+          const { data: files, error: listError } = await supabase.storage
+            .from(bucketName)
+            .list(workspacePath, {
+              limit: 10000,
+              sortBy: { column: "created_at", order: "asc" },
+            });
+
+          if (listError) {
+            throw listError;
+          }
+
+          if (!files || files.length === 0) {
+            return { deleted: 0, freedMB: 0 };
+          }
+
+          // Filtrar arquivos antigos
+          const filesToDelete: string[] = [];
+          let totalSizeToFree = 0;
+
+          for (const file of files) {
+            if (!file.id) continue;
+
+            // Verificar tipo de arquivo se especificado
+            if (input.fileTypes && input.fileTypes.length > 0) {
+              const ext = file.name.split('.').pop()?.toLowerCase() || '';
+              let fileType: "audio" | "image" | "video" | "document" = "document";
+              
+              if (['mp3', 'ogg', 'wav', 'm4a', 'opus', 'webm'].includes(ext)) {
+                fileType = "audio";
+              } else if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+                fileType = "image";
+              } else if (['mp4', 'webm', 'mov', 'avi'].includes(ext)) {
+                fileType = "video";
+              }
+
+              if (!input.fileTypes.includes(fileType)) {
+                continue;
+              }
+            }
+
+            // Verificar data de criação
+            if (file.created_at) {
+              const fileDate = new Date(file.created_at);
+              if (fileDate < cutoffDate) {
+                filesToDelete.push(`${workspacePath}${file.name}`);
+                
+                // Tentar obter tamanho do arquivo
+                const size = (file.metadata as any)?.size || (file as any).size || 0;
+                totalSizeToFree += size;
+              }
+            }
+          }
+
+          // Deletar arquivos
+          let deletedCount = 0;
+          if (filesToDelete.length > 0) {
+            const { error: deleteError } = await supabase.storage
+              .from(bucketName)
+              .remove(filesToDelete);
+
+            if (deleteError) {
+              console.error("[Storage] Error deleting files:", deleteError);
+              throw deleteError;
+            }
+
+            deletedCount = filesToDelete.length;
+          }
+
+          const freedMB = (totalSizeToFree / (1024 * 1024)).toFixed(2);
+
+          console.log(`[Storage] Cleaned up ${deletedCount} files, freed ${freedMB} MB`);
+
+          return {
+            deleted: deletedCount,
+            freedMB: parseFloat(freedMB),
+          };
+        } catch (error: any) {
+          console.error("[Storage] Error cleaning up files:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Failed to cleanup storage: ${error.message || "Unknown error"}`,
+          });
+        }
       }),
   }),
 

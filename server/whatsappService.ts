@@ -3,12 +3,13 @@ import * as db from "./db";
 import { processIncomingMessage } from "./aiService";
 import path from "path";
 import fs from "fs";
-import type { Client as WhatsAppClient, Message as WhatsAppMessage } from "whatsapp-web.js";
+import type { Client as WhatsAppClient, Message as WhatsAppMessage, MessageMedia } from "whatsapp-web.js";
 
 const require = createRequire(import.meta.url);
 const wweb = require("whatsapp-web.js");
 const Client = wweb.Client as typeof WhatsAppClient;
 const Message = wweb.Message as typeof WhatsAppMessage;
+const MessageMedia = wweb.MessageMedia as typeof MessageMedia;
 const LocalAuth = wweb.LocalAuth;
 
 const BASE_SESSIONS_DIR = process.env.WHATSAPP_SESSIONS_DIR
@@ -752,9 +753,36 @@ export async function sendTextMessage(instanceKey: string, number: string, text:
 
   try {
     // Verificar estado do cliente
-    const state = await client.getState();
-    if (state !== "CONNECTED") {
-      throw new Error(`Client is not connected. Current state: ${state}`);
+    let state: string | null;
+    try {
+      state = await client.getState();
+    } catch (stateError: any) {
+      console.error(`[WhatsApp] Error getting client state for ${instanceKey}:`, stateError);
+      state = null;
+    }
+    
+    // Se o estado for null ou não conectado, tentar recriar o cliente
+    if (!state || state !== "CONNECTED") {
+      console.warn(`[WhatsApp] Client state is ${state || "null"}, attempting to recreate...`);
+      const dbInstance = await db.getWhatsappInstanceByKey(instanceKey);
+      if (dbInstance && (dbInstance.status === "connected" || dbInstance.status === "connecting")) {
+        try {
+          await createWhatsAppInstance(instanceKey);
+          client = activeClients.get(instanceKey);
+          if (client) {
+            state = await client.getState();
+            if (state !== "CONNECTED") {
+              throw new Error(`Client recreated but still not connected. State: ${state}`);
+            }
+          } else {
+            throw new Error(`Failed to recreate client`);
+          }
+        } catch (recreateError: any) {
+          throw new Error(`Client is not connected (state: ${state || "null"}) and failed to recreate: ${recreateError.message}`);
+        }
+      } else {
+        throw new Error(`Client is not connected. Current state: ${state || "null"}. Instance status: ${dbInstance?.status || "unknown"}`);
+      }
     }
 
     // Formatar número (remover caracteres especiais, adicionar @s.whatsapp.net se necessário)
@@ -767,6 +795,301 @@ export async function sendTextMessage(instanceKey: string, number: string, text:
     console.error(`[WhatsApp] Error sending message from ${instanceKey} to ${number}:`, error);
     throw new Error(`Failed to send message: ${error.message}`);
   }
+}
+
+/**
+ * Enviar mensagem de mídia (imagem, áudio, vídeo, documento)
+ */
+export async function sendMediaMessage(
+  instanceKey: string,
+  number: string,
+  mediaUrl: string,
+  mediaType: "image" | "audio" | "video" | "document",
+  caption?: string
+): Promise<void> {
+  let client = activeClients.get(instanceKey);
+  
+  // Se o cliente não estiver no Map, tentar recriar a partir do banco
+  if (!client) {
+    console.log(`[WhatsApp] Client not found in memory for ${instanceKey}, checking database...`);
+    const dbInstance = await db.getWhatsappInstanceByKey(instanceKey);
+    
+    if (dbInstance && (dbInstance.status === "connected" || dbInstance.status === "connecting")) {
+      console.log(`[WhatsApp] Instance found in database with status: ${dbInstance.status}, recreating client...`);
+      try {
+        await createWhatsAppInstance(instanceKey);
+        client = activeClients.get(instanceKey);
+        
+        if (!client) {
+          throw new Error("Failed to recreate client");
+        }
+        
+        // Aguardar um pouco para o cliente se conectar se necessário
+        let attempts = 0;
+        while (attempts < 10) {
+          const state = await client.getState();
+          if (state === "CONNECTED") {
+            console.log(`[WhatsApp] Client recreated and connected for ${instanceKey}`);
+            break;
+          }
+          if (state === "UNPAIRED" || state === "LOGOUT") {
+            throw new Error(`Client is ${state}, cannot send messages`);
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          attempts++;
+        }
+      } catch (error: any) {
+        console.error(`[WhatsApp] Error recreating client for ${instanceKey}:`, error);
+        throw new Error(`Instance not found or not connected: ${error.message}`);
+      }
+    } else {
+      throw new Error(`Instance not found in database or not connected (status: ${dbInstance?.status || "unknown"})`);
+    }
+  }
+
+  if (!client) {
+    throw new Error("Instance not found or not connected");
+  }
+
+  try {
+    // Verificar estado do cliente
+    const state = await client.getState();
+    if (state !== "CONNECTED") {
+      throw new Error(`Client is not connected. Current state: ${state}`);
+    }
+
+    // Formatar número
+    const formattedNumber = number.includes("@") ? number : `${number}@s.whatsapp.net`;
+    
+    console.log(`[WhatsApp] Sending media from ${instanceKey} to ${formattedNumber}: ${mediaType} - ${mediaUrl}`);
+    
+    // Tentar usar MessageMedia.fromUrl se disponível (mais confiável)
+    let media: any;
+    
+    // Detectar se é OGG para garantir MIME type correto
+    const isOGG = mediaUrl.toLowerCase().includes('.ogg') || mediaType === 'audio';
+    const expectedMimeType = isOGG ? 'audio/ogg; codecs=opus' : undefined;
+    
+    try {
+      // Verificar se MessageMedia.fromUrl existe
+      if (typeof (MessageMedia as any).fromUrl === 'function') {
+        console.log(`[WhatsApp] Using MessageMedia.fromUrl for better compatibility`);
+        media = await (MessageMedia as any).fromUrl(mediaUrl);
+        console.log(`[WhatsApp] MessageMedia created from URL successfully`);
+        
+        // Se for OGG, garantir que o MIME type está correto
+        if (isOGG && media && (!media.mimetype || !media.mimetype.includes('ogg'))) {
+          console.log(`[WhatsApp] Forcing correct MIME type for OGG: audio/ogg; codecs=opus`);
+          media.mimetype = 'audio/ogg; codecs=opus';
+        }
+        
+        // Log do MIME type final
+        console.log(`[WhatsApp] Final MIME type: ${media?.mimetype || 'unknown'}`);
+      } else {
+        throw new Error("MessageMedia.fromUrl not available");
+      }
+    } catch (fromUrlError: any) {
+      console.log(`[WhatsApp] MessageMedia.fromUrl not available or failed, using manual download:`, fromUrlError.message);
+      
+      // Fallback: baixar manualmente
+      const response = await fetch(mediaUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download media from URL: ${response.statusText}`);
+      }
+      
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      
+      // Verificar tamanho do arquivo (WhatsApp tem limite de ~16MB)
+      const fileSizeMB = buffer.length / (1024 * 1024);
+      if (fileSizeMB > 16) {
+        throw new Error(`File too large: ${fileSizeMB.toFixed(2)}MB. Maximum size is 16MB.`);
+      }
+      
+      // Se for documento, forçar MIME type como application/octet-stream
+      let finalMimeType: string;
+      let fileName: string;
+      
+      if (mediaType === 'document') {
+        // Para documentos, usar application/octet-stream para garantir que seja enviado como documento
+        finalMimeType = 'application/octet-stream';
+        
+        // Extrair nome do arquivo da URL (sem query params)
+        try {
+          const urlPath = new URL(mediaUrl).pathname;
+          fileName = urlPath.split('/').pop() || `document.${mediaUrl.split('.').pop() || 'bin'}`;
+        } catch {
+          fileName = mediaUrl.split('/').pop() || `document.${mediaUrl.split('.').pop() || 'bin'}`;
+        }
+        
+        console.log(`[WhatsApp] Sending as DOCUMENT: ${fileName} (${finalMimeType})`);
+      } else {
+        // Para outros tipos de mídia, usar o MIME type detectado
+        let mimeType = response.headers.get("content-type") || getMimeTypeFromUrl(mediaUrl, mediaType);
+        
+        // Extrair nome do arquivo da URL (sem query params)
+        try {
+          const urlPath = new URL(mediaUrl).pathname;
+          fileName = urlPath.split('/').pop() || `file.${mediaType}`;
+        } catch {
+          fileName = mediaUrl.split('/').pop() || `file.${mediaType}`;
+        }
+        
+        // Se for OGG, garantir MIME type correto
+        if (fileName.endsWith('.ogg') && mediaType === 'audio') {
+          console.log(`[WhatsApp] Detected OGG audio, ensuring correct MIME type`);
+          mimeType = 'audio/ogg; codecs=opus';
+        }
+        
+        // Se for webm de áudio, avisar sobre possível problema de compatibilidade
+        if (fileName.endsWith('.webm') && mediaType === 'audio') {
+          console.warn(`[WhatsApp] WARNING: Audio is in WebM format. WhatsApp Web does not support WebM audio.`);
+          console.warn(`[WhatsApp] Consider sending as document instead.`);
+          mimeType = 'audio/webm';
+        }
+        
+        finalMimeType = mimeType;
+      }
+      
+      // Limpar nome do arquivo (remover caracteres especiais)
+      fileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      
+      // Converter buffer para base64
+      const base64Data = buffer.toString("base64");
+      
+      console.log(`[WhatsApp] Creating MessageMedia manually: type=${finalMimeType}, size=${fileSizeMB.toFixed(2)}MB, filename=${fileName}`);
+      
+      // Criar MessageMedia manualmente
+      try {
+        media = new MessageMedia(finalMimeType, base64Data, fileName);
+        console.log(`[WhatsApp] MessageMedia created successfully`);
+      } catch (createError: any) {
+        console.error(`[WhatsApp] Error creating MessageMedia:`, createError);
+        // Tentar criar objeto manualmente
+        media = {
+          mimetype: finalMimeType,
+          data: base64Data,
+          filename: fileName,
+        };
+        console.log(`[WhatsApp] Using manual MessageMedia object`);
+      }
+    }
+    
+    // Enviar mídia com opções
+    const sendOptions: any = {};
+    if (caption && caption.trim()) {
+      sendOptions.caption = caption.trim();
+    }
+    
+    // Log detalhado antes de enviar
+    console.log(`[WhatsApp] Preparing to send media:`, {
+      mediaType,
+      mimeType: media?.mimetype || 'unknown',
+      hasData: !!media?.data,
+      dataLength: media?.data?.length || 0,
+      filename: media?.filename || 'unknown',
+      hasCaption: !!sendOptions.caption
+    });
+    
+    try {
+      await client.sendMessage(formattedNumber, media, sendOptions);
+      console.log(`[WhatsApp] Media sent successfully from ${instanceKey} to ${formattedNumber}`);
+    } catch (sendError: any) {
+      // Se falhar, tentar sem opções
+      if (sendOptions.caption) {
+        console.warn(`[WhatsApp] Failed to send with caption, trying without caption:`, sendError.message);
+        try {
+          await client.sendMessage(formattedNumber, media);
+          console.log(`[WhatsApp] Media sent successfully (without caption) from ${instanceKey} to ${formattedNumber}`);
+        } catch (retryError: any) {
+          // Se ainda falhar, tentar sem filename
+          console.warn(`[WhatsApp] Failed without caption, trying without filename:`, retryError.message);
+          try {
+            const mediaWithoutFilename = {
+              mimetype: media.mimetype,
+              data: media.data,
+            };
+            await client.sendMessage(formattedNumber, mediaWithoutFilename);
+            console.log(`[WhatsApp] Media sent successfully (without filename) from ${instanceKey} to ${formattedNumber}`);
+          } catch (finalError: any) {
+            // Log detalhado do erro para debug
+            console.error(`[WhatsApp] Final error details:`, {
+              error: finalError.message,
+              stack: finalError.stack,
+              mediaType: mediaType,
+              mimeType: media.mimetype,
+              hasData: !!media.data,
+              dataLength: media.data?.length,
+              filename: media.filename,
+            });
+            
+            // Mensagem de erro mais específica
+            let errorMessage: string;
+            if (mediaType === 'audio' && media.mimetype?.includes('webm')) {
+              errorMessage = `Failed to send audio: WhatsApp Web does not support WebM audio format. Please try recording in MP3 or OGG format, or send an image/video instead. Original error: ${finalError.message}`;
+            } else if (mediaType === 'audio' && media.mimetype?.includes('ogg')) {
+              errorMessage = `Failed to send OGG audio: ${finalError.message}. The OGG format may not be fully supported by WhatsApp Web. Consider sending as a document instead.`;
+            } else {
+              errorMessage = `Failed to send media after all retries. The media format may not be supported by WhatsApp. Error: ${finalError.message}`;
+            }
+            throw new Error(errorMessage);
+          }
+        }
+      } else {
+        throw sendError;
+      }
+    }
+  } catch (error: any) {
+    console.error(`[WhatsApp] Error sending media from ${instanceKey} to ${number}:`, error);
+    throw new Error(`Failed to send media: ${error.message}`);
+  }
+}
+
+/**
+ * Obter MIME type a partir da URL e tipo de mídia
+ */
+function getMimeTypeFromUrl(url: string, mediaType: "image" | "audio" | "video" | "document"): string {
+  const extension = url.split('.').pop()?.toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    // Images
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    // Audio - WhatsApp suporta melhor mp3, ogg, m4a
+    'mp3': 'audio/mpeg',
+    'ogg': 'audio/ogg; codecs=opus',
+    'wav': 'audio/wav',
+    'm4a': 'audio/mp4',
+    'opus': 'audio/ogg; codecs=opus',
+    'webm': 'audio/ogg; codecs=opus', // Converter webm para ogg para compatibilidade
+    // Video
+    'mp4': 'video/mp4',
+    'webm': 'video/webm',
+    'mov': 'video/quicktime',
+    // Documents
+    'pdf': 'application/pdf',
+    'doc': 'application/msword',
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'xls': 'application/vnd.ms-excel',
+    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'txt': 'text/plain',
+  };
+  
+  if (extension && mimeTypes[extension]) {
+    return mimeTypes[extension];
+  }
+  
+  // Fallback baseado no tipo
+  const fallbacks: Record<"image" | "audio" | "video" | "document", string> = {
+    image: 'image/jpeg',
+    audio: 'audio/ogg; codecs=opus', // Usar ogg como padrão para melhor compatibilidade
+    video: 'video/mp4',
+    document: 'application/octet-stream',
+  };
+  
+  return fallbacks[mediaType];
 }
 
 /**
