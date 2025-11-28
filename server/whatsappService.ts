@@ -4,6 +4,7 @@ import { processIncomingMessage } from "./aiService";
 import path from "path";
 import fs from "fs";
 import type { Client as WhatsAppClient, Message as WhatsAppMessage, MessageMedia } from "whatsapp-web.js";
+import { createClient } from "@supabase/supabase-js";
 
 const require = createRequire(import.meta.url);
 const wweb = require("whatsapp-web.js");
@@ -27,6 +28,64 @@ const LOCK_FILES = [
   "lockfile",
   "LOCK",
 ];
+
+/**
+ * Upload de mídia para Supabase Storage
+ */
+async function uploadMediaToSupabase(
+  workspaceId: number,
+  mediaBase64: string,
+  mimeType: string,
+  fileName: string
+): Promise<string | undefined> {
+  try {
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      console.warn("[WhatsApp] Supabase not configured for media uploads");
+      return undefined;
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    const bucketName = "whatsapp-media";
+
+    // Verificar se o bucket existe
+    const { data: buckets } = await supabase.storage.listBuckets();
+    const bucketExists = buckets?.some(b => b.name === bucketName);
+
+    if (!bucketExists) {
+      console.log(`[WhatsApp] Creating Supabase Storage bucket: ${bucketName}`);
+      const { error: createError } = await supabase.storage.createBucket(bucketName, {
+        public: true,
+        fileSizeLimit: 50 * 1024 * 1024, // 50MB
+      });
+      if (createError && !createError.message.includes("already exists")) {
+        console.error("[WhatsApp] Failed to create bucket:", createError);
+        return undefined;
+      }
+    }
+
+    const buffer = Buffer.from(mediaBase64, "base64");
+    const filePath = `workspaces/${workspaceId}/media/${Date.now()}-${fileName}`;
+    
+    const { data, error } = await supabase.storage
+      .from(bucketName)
+      .upload(filePath, buffer, { contentType: mimeType, upsert: false });
+
+    if (error) {
+      console.error("[WhatsApp] Supabase Storage upload error:", error);
+      return undefined;
+    }
+
+    const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(filePath);
+    console.log(`[WhatsApp] Media uploaded to Supabase Storage: ${urlData.publicUrl}`);
+    return urlData.publicUrl;
+  } catch (error) {
+    console.error("[WhatsApp] Error uploading media to Supabase:", error);
+    return undefined;
+  }
+}
 
 function cleanupChromiumLocks(instanceKey: string) {
   const profileDir = path.join(BASE_SESSIONS_DIR, instanceKey, "Default");
@@ -402,7 +461,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         // Extrair conteúdo da mensagem
         let messageContent = message.body || "";
         let mediaUrl: string | undefined;
-        let mediaType: "image" | "audio" | "video" | undefined;
+        let mediaType: "image" | "audio" | "video" | "document" | undefined;
         let mediaBase64: string | undefined;
         let mediaMimeType: string | undefined;
 
@@ -415,6 +474,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
               mediaBase64 = media.data;
               mediaMimeType = media.mimetype;
               
+              // Detectar tipo de mídia
               if (media.mimetype?.startsWith("image/")) {
                 mediaType = "image";
                 messageContent = message.caption || "[Imagem]";
@@ -424,52 +484,53 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
               } else if (media.mimetype?.startsWith("video/")) {
                 mediaType = "video";
                 messageContent = message.caption || "[Vídeo]";
+              } else {
+                // Documento (PDF, DOC, etc)
+                mediaType = "document";
+                // Tentar obter nome do arquivo de diferentes fontes
+                const fileName = (message as any).filename || 
+                  message.body?.split('/').pop() || 
+                  message.caption || 
+                  (mediaMimeType?.includes('pdf') ? 'documento.pdf' : 
+                   mediaMimeType?.includes('doc') ? 'documento.doc' : 
+                   'documento');
+                messageContent = message.caption || `[Documento: ${fileName}]`;
               }
-              console.log(`[WhatsApp] Media downloaded: ${mediaType}, size: ${mediaBase64.length}`);
+              
+              console.log(`[WhatsApp] Media downloaded: ${mediaType}, mimeType: ${mediaMimeType}, size: ${mediaBase64.length}`);
+              
+              // Fazer upload para Supabase Storage
+              if (mediaBase64 && dbInstance.workspaceId) {
+                // Tentar obter nome do arquivo de diferentes fontes
+                const fileName = (message as any).filename || 
+                  message.body?.split('/').pop() || 
+                  message.caption ||
+                  (mediaType === "image" ? `imagem-${Date.now()}.jpg` : 
+                   mediaType === "audio" ? `audio-${Date.now()}.ogg` : 
+                   mediaType === "video" ? `video-${Date.now()}.mp4` : 
+                   mediaType === "document" ? (mediaMimeType?.includes('pdf') ? `documento-${Date.now()}.pdf` : `documento-${Date.now()}`) :
+                   `arquivo-${Date.now()}`);
+                
+                const uploadedUrl = await uploadMediaToSupabase(
+                  dbInstance.workspaceId,
+                  mediaBase64,
+                  mediaMimeType || "application/octet-stream",
+                  fileName
+                );
+                
+                if (uploadedUrl) {
+                  mediaUrl = uploadedUrl;
+                  console.log(`[WhatsApp] Media uploaded to Supabase: ${uploadedUrl}`);
+                }
+              }
             }
           } catch (mediaError) {
             console.error(`[WhatsApp] Error downloading media:`, mediaError);
           }
         }
 
-        // Se for imagem, transferir automaticamente para atendente (exceto se já estiver em status manual)
-        if (mediaType === "image" && !contactWaiting) {
-          console.log("[WhatsApp] Image detected. Transferring to human attendant.");
-          const transferMessage =
-            "Vou transferir você para um atendente para continuar o atendimento. Aguarde só um instante, por favor.";
-          
-          try {
-            await client.sendMessage(message.from, transferMessage);
-          } catch (sendError) {
-            console.error("[WhatsApp] Failed to send image transfer message:", sendError);
-          }
-          
-          try {
-            await db.updateContactKanbanStatus(contact.id, "negotiating");
-          } catch (statusError) {
-            console.error("[WhatsApp] Failed to update contact status during image transfer:", statusError);
-          }
-          
-          // Salvar a mensagem no banco antes de retornar
-          try {
-            await db.createMessage({
-              workspaceId: dbInstance.workspaceId,
-              contactId: contact.id,
-              instanceId: dbInstance.id,
-              content: messageContent,
-              direction: "incoming",
-              mediaUrl,
-              mediaType,
-              mediaBase64,
-              mediaMimeType,
-            });
-          } catch (msgError) {
-            console.error("[WhatsApp] Failed to save image message:", msgError);
-          }
-          
-          // Não processar a imagem com a IA
-          return;
-        }
+        // Nota: Removida transferência automática para imagens
+        // Agora imagens são processadas normalmente pela IA (especialmente para NETCAR)
 
         const normalizedContent = `${message.body || ""} ${message.caption || ""}`.toLowerCase();
         const prescriptionKeywords = ["receita", "prescrição", "prescricao", "receitinha", "receitou"];

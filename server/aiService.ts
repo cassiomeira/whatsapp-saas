@@ -693,7 +693,7 @@ export async function processIncomingMessage(
   messageContent: string,
   whatsappNumber: string,
   mediaUrl?: string,
-  mediaType?: "image" | "audio" | "video",
+  mediaType?: "image" | "audio" | "video" | "document",
   mediaBase64?: string,
   mediaMimeType?: string
 ): Promise<void> {
@@ -856,6 +856,8 @@ export async function processIncomingMessage(
       conversationId: activeConv.id,
       senderType: "contact",
       content: processedContent,
+      messageType: mediaType || "text",
+      mediaUrl: resolvedMediaUrl,
     });
 
     // Se o contato está aguardando atendente, IA não responde
