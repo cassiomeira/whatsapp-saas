@@ -1229,6 +1229,49 @@ export async function reconnectInstance(instanceKey: string): Promise<{ qrCode: 
 /**
  * Inicializar instâncias existentes ao iniciar o servidor
  */
+/**
+ * Enviar documento PDF via WhatsApp (boleto, etc)
+ */
+export async function sendPDFDocument(
+  instanceKey: string,
+  number: string,
+  pdfBase64: string,
+  filename: string,
+  caption?: string
+): Promise<void> {
+  let client = activeClients.get(instanceKey);
+  
+  if (!client) {
+    throw new Error("Instance not found or not connected");
+  }
+
+  try {
+    const state = await client.getState();
+    if (state !== "CONNECTED") {
+      throw new Error(`Client is not connected. Current state: ${state}`);
+    }
+
+    const formattedNumber = number.includes("@") ? number : `${number}@s.whatsapp.net`;
+    
+    console.log(`[WhatsApp] Enviando PDF de ${instanceKey} para ${formattedNumber}: ${filename}`);
+    
+    // Criar MessageMedia diretamente do Base64
+    const media = new MessageMedia('application/pdf', pdfBase64, filename);
+    
+    console.log(`[WhatsApp] MessageMedia criado:`, {
+      mimetype: media.mimetype,
+      filename: media.filename,
+      dataLength: pdfBase64.length
+    });
+    
+    await client.sendMessage(formattedNumber, media, { caption });
+    console.log(`[WhatsApp] PDF enviado com sucesso para ${formattedNumber}`);
+  } catch (error: any) {
+    console.error(`[WhatsApp] Erro ao enviar PDF:`, error);
+    throw new Error(`Failed to send PDF: ${error.message}`);
+  }
+}
+
 export async function initializeExistingInstances(): Promise<void> {
   try {
     console.log("[WhatsApp] Initializing existing instances...");

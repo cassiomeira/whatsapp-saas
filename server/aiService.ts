@@ -1,7 +1,8 @@
 import { invokeLLM } from "./_core/llm";
 import { transcribeAudio } from "./_core/voiceTranscription";
 import * as db from "./db";
-import { detectarIntencaoIXC, processarConsultaFatura, processarDesbloqueio, enriquecerPromptComIXC } from "./ixcAiHelper";
+import { detectarIntencaoIXC, processarConsultaFatura, processarDesbloqueio, enriquecerPromptComIXC, detectarDocumento } from "./ixcAiHelper";
+import { processarFluxoRobotizado } from "./automatedFlowHelper";
 import { detectarPedidoAtendente, detectarIndecisaoOuSemFechamento, gerarMensagemTransferencia, enriquecerPromptComAtendimento } from "./humanAttendantHelper";
 import type { Product } from "../drizzle/schema";
 
@@ -342,6 +343,21 @@ export async function generateBotResponse(
 
     // Buscar histórico de mensagens da conversa
     const messages = await db.getMessagesByConversation(conversationId);
+    
+    // Buscar nome do contato
+    const conversations = await db.getConversationsByWorkspace(workspaceId);
+    const currentConv = conversations.find(c => c.id === conversationId);
+    let nomeCliente = "";
+    if (currentConv && currentConv.contactId) {
+      const contacts = await db.getContactsByWorkspace(workspaceId);
+      const contact = contacts.find(c => c.id === currentConv.contactId);
+      if (contact && contact.name) {
+        // Extrair primeiro nome
+        const primeiroNome = contact.name.split(/\s+/)[0];
+        nomeCliente = primeiroNome.charAt(0).toUpperCase() + primeiroNome.slice(1).toLowerCase();
+        console.log(`[AI Service] Nome do cliente encontrado: ${nomeCliente}`);
+      }
+    }
 
     const normalizedMessage = userMessage.toLowerCase();
     const normalizedMessageNoAccents = normalizeToken(normalizedMessage);
@@ -547,6 +563,12 @@ export async function generateBotResponse(
     let systemPrompt = botConfig.masterPrompt || "Você é um assistente de atendimento profissional e prestativo.";
     systemPrompt = enriquecerPromptComIXC(systemPrompt);
     systemPrompt = enriquecerPromptComAtendimento(systemPrompt);
+    
+    // Adicionar nome do cliente ao prompt
+    if (nomeCliente) {
+      systemPrompt += `\n\n🎯 IMPORTANTE - PERSONALIZAÇÃO:\nO nome do cliente é *${nomeCliente}*. SEMPRE use o nome dele nas suas respostas para criar uma experiência mais humanizada e pessoal. Por exemplo: "Olá ${nomeCliente}!", "Entendi ${nomeCliente}!", "${nomeCliente}, posso te ajudar com...", etc.\n\nUsar o nome do cliente demonstra atenção e cuidado, tornando o atendimento mais caloroso e profissional.`;
+    }
+    
     systemPrompt += `
 Regras de catálogo:
 - Sempre que apresentar um produto, informe o preço exatamente como fornecido na lista e destaque que o item está disponível para pronta entrega.
@@ -921,98 +943,133 @@ export async function processIncomingMessage(
       //   return;
       // }
 
-      // Detectar pedido de atendente humano
-      const pedidoAtendente = detectarPedidoAtendente(processedContent);
-      console.log(`[AI Service] detectarPedidoAtendente resultado:`, {
-        precisaAtendente: pedidoAtendente.precisaAtendente,
-        confianca: pedidoAtendente.confianca,
-        mensagem: processedContent.substring(0, 100)
-      });
+      // FLUXO ROBOTIZADO: Processar PRIMEIRO (antes de tudo)
+      // Isso garante que a saudação inicial apareça antes da IA processar
+      console.log(`[AI Service] ===== INICIANDO FLUXO ROBOTIZADO =====`);
+      console.log(`[AI Service] Mensagem processada: "${processedContent}"`);
+      const respostaAutomatica = await processarFluxoRobotizado(
+        workspaceId,
+        activeConv.id,
+        processedContent,
+        whatsappNumber
+      );
       
-      // Detectar indecisão ou dificuldade em fechar compra
-      const indecisao = detectarIndecisaoOuSemFechamento(processedContent);
-      console.log(`[AI Service] detectarIndecisaoOuSemFechamento resultado:`, {
-        precisaAtendente: indecisao.precisaAtendente,
-        confianca: indecisao.confianca
-      });
+      console.log(`[AI Service] Resposta do fluxo robotizado:`, respostaAutomatica ? `"${respostaAutomatica.substring(0, 100)}"` : "null");
       
-      // Verificar se contato está em negotiating há muito tempo (sem fechar compra)
-      // Buscar mensagens uma única vez para verificar histórico
-      const messagesForHistory = await db.getMessagesByConversation(activeConv.id);
-      const botMessages = messagesForHistory.filter(m => m.senderType === "bot");
-      
-      // IMPORTANTE: Considerar apenas mensagens RECENTES (últimas 2 horas) para evitar transferir por conversas antigas
-      const duasHorasAtras = new Date(Date.now() - 2 * 60 * 60 * 1000);
-      const botMessagesRecentes = botMessages.filter(m => {
-        if (!m.createdAt) return false;
-        const messageDate = new Date(m.createdAt);
-        return messageDate >= duasHorasAtras;
-      });
-      
-      console.log(`[AI Service] Histórico: ${botMessages.length} mensagens totais do bot, ${botMessagesRecentes.length} mensagens recentes (últimas 2h), contactInNegotiating: ${contactInNegotiating}`);
-      
-      // Se JÁ está em negotiating, NÃO transferir novamente - apenas continuar respondendo
-      // Transferir automaticamente APENAS se:
-      // 1. Cliente pediu atendente MUITO explicitamente (confiança MUITO alta + pelo menos 2 mensagens recentes) OU
-      // 2. Cliente demonstra indecisão/dificuldade em fechar APÓS várias interações recentes (confiança alta + pelo menos 5 mensagens recentes) OU
-      // 3. Conversa MUITO longa RECENTE sem fechar (8+ mensagens recentes do bot)
-      // NÃO transferir em perguntas simples sobre produtos
-      // NÃO transferir nas primeiras interações - dar chance para a IA ajudar
-      const deveTransferir = !contactInNegotiating && (
-                             // Pedido direto de atendente (confiança MUITO alta + pelo menos 2 mensagens recentes do bot para evitar falso positivo)
-                             (pedidoAtendente.precisaAtendente && pedidoAtendente.confianca > 0.85 && botMessagesRecentes.length >= 2) ||
-                             // Indecisão após várias interações recentes (confiança alta + pelo menos 5 mensagens recentes do bot)
-                             (indecisao.precisaAtendente && indecisao.confianca > 0.75 && botMessagesRecentes.length >= 5) ||
-                             // Conversa muito longa RECENTE sem fechar (8+ mensagens recentes do bot)
-                             (botMessagesRecentes.length >= 8)
-                             );
-      
-      console.log(`[AI Service] deveTransferir: ${deveTransferir}`);
-      
-      if (deveTransferir) {
-        const motivo = pedidoAtendente.precisaAtendente 
-          ? `pedido direto (confiança: ${pedidoAtendente.confianca.toFixed(2)})`
-          : indecisao.precisaAtendente
-          ? `indecisão/dificuldade em fechar (confiança: ${indecisao.confianca.toFixed(2)})`
-          : `conversa longa recente sem fechamento (${botMessagesRecentes.length} mensagens recentes do bot)`;
+      if (respostaAutomatica) {
+        // Encontrou resposta automática - usar ela e retornar
+        console.log(`[AI Service] ✅ Resposta automática encontrada no fluxo robotizado - USANDO ELA`);
+        console.log(`[AI Service] Tipo da resposta:`, typeof respostaAutomatica);
+        console.log(`[AI Service] Preview da resposta:`, typeof respostaAutomatica === 'string' ? respostaAutomatica.substring(0, 150) : 'não é string');
         
-        console.log(`[AI Service] Transferindo para atendente humano - Motivo: ${motivo}`);
+        // Verificar se a resposta contém boletos para enviar
+        let botResponse = respostaAutomatica;
+        let boletosParaEnviar: Array<{ idFatura: number; pdfBase64: string; nomeArquivo: string }> = [];
         
-        // Usar contato já buscado anteriormente
-        const botResponse = gerarMensagemTransferencia(contact?.name || undefined);
+        try {
+          const respostaObj = JSON.parse(respostaAutomatica);
+          console.log(`[AI Service] Resposta é JSON válido. Tipo:`, respostaObj.tipo);
+          if (respostaObj.tipo === 'consulta_com_boletos') {
+            botResponse = respostaObj.mensagem;
+            boletosParaEnviar = respostaObj.boletos || [];
+            console.log(`[AI Service] ✅ Resposta contém ${boletosParaEnviar.length} boleto(s) para enviar`);
+          }
+        } catch (e) {
+          // Não é JSON, é texto normal
+          console.log(`[AI Service] Resposta não é JSON, é texto normal`);
+        }
         
-        // Salvar resposta do bot
+        // Se a resposta automática pediu transferência, processar
+        if (botResponse.includes("transferir") && botResponse.includes("atendente")) {
+          await db.updateContactKanbanStatus(contactId, "negotiating");
+        }
+        
+        // Salvar e enviar resposta automática
         await db.createMessage({
           conversationId: activeConv.id,
           senderType: "bot",
           content: botResponse,
         });
-        
-        // Enviar resposta via WhatsApp
+
         try {
-          const { sendTextMessage } = await import("./whatsappService");
+          const { sendTextMessage, sendPDFDocument } = await import("./whatsappService");
           const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
           const instance = instances.find(i => i.id === instanceId);
-          
+
           if (instance && instance.instanceKey) {
+            // Enviar mensagem de texto
             await sendTextMessage(instance.instanceKey, destinationNumber, botResponse);
-            console.log(`[AI Service] Mensagem de transferência enviada para ${destinationNumber}`);
+            console.log(`[AI Service] Resposta automática enviada para ${destinationNumber}`);
+            
+            // Enviar boletos se houver
+            if (boletosParaEnviar.length > 0) {
+              console.log(`[AI Service] Enviando ${boletosParaEnviar.length} boleto(s)...`);
+              for (const boleto of boletosParaEnviar) {
+                try {
+                  await sendPDFDocument(
+                    instance.instanceKey,
+                    destinationNumber,
+                    boleto.pdfBase64,
+                    boleto.nomeArquivo,
+                    `Fatura ${boleto.idFatura}`
+                  );
+                  console.log(`[AI Service] ✅ Boleto ${boleto.idFatura} enviado`);
+                } catch (error) {
+                  console.error(`[AI Service] ❌ Erro ao enviar boleto ${boleto.idFatura}:`, error);
+                }
+              }
+            }
           }
         } catch (error) {
-          console.error(`[AI Service] Erro ao enviar mensagem de transferência:`, error);
+          console.error(`[AI Service] Erro ao enviar resposta automática:`, error);
         }
         
-        await db.updateContactKanbanStatus(contactId, "negotiating");
-        // NÃO mudar para pending_human - manter bot_handling para continuar respondendo com aviso
-        // await db.updateConversationStatus(activeConv.id, "pending_human");
-        console.log(`[AI Service] Contato ${contactId} movido para "Negociando". Bot continuará respondendo com aviso de transferência.`);
-        
-        return;
+        return; // Retornar aqui - não processar mais nada
       }
+      
+      // Se não encontrou resposta automática, continuar com processamento normal
+      // Verificar se bot pediu CPF recentemente e cliente está fornecendo agora
+      const messages = await db.getMessagesByConversation(activeConv.id);
+      const recentBotMessages = messages
+        .filter(m => m.senderType === "bot" && m.createdAt)
+        .slice(-3)
+        .map(m => m.content?.toLowerCase() || "");
+      
+      const botPediuCPF = recentBotMessages.some(msg => 
+        msg.includes("preciso do cpf") || msg.includes("cpf ou cnpj") || msg.includes("informe seu cpf")
+      );
       
       // Detectar intenção IXC
       const intencaoIXC = detectarIntencaoIXC(processedContent);
-      let botResponse: string;
+      console.log(`[AI Service] Intenção IXC detectada:`, intencaoIXC);
+      let botResponse: string = ""; // Inicializar com valor padrão
+      
+      // Se bot pediu CPF e cliente forneceu documento nesta mensagem, processar
+      const documentoNaMensagem = detectarDocumento(processedContent);
+      if (botPediuCPF && documentoNaMensagem && intencaoIXC.tipo === "nenhuma") {
+        // Verificar contexto: se foi pedido para desbloqueio ou consulta
+        const recentUserMessages = messages
+          .filter(m => m.senderType === "user" && m.createdAt)
+          .slice(-5)
+          .map(m => m.content?.toLowerCase() || "");
+        
+        const pediuDesbloqueio = recentUserMessages.some(msg => 
+          msg.includes("liberar") || msg.includes("desbloquear") || msg.includes("desbloqueio") ||
+          msg.includes("paguei") || msg.includes("paguei minha conta")
+        );
+        
+        if (pediuDesbloqueio) {
+          console.log(`[AI Service] Bot pediu CPF e cliente forneceu: ${documentoNaMensagem}. Processando desbloqueio...`);
+          intencaoIXC.tipo = "desbloqueio";
+          intencaoIXC.confianca = 0.95;
+          intencaoIXC.documento = documentoNaMensagem;
+        } else {
+          console.log(`[AI Service] Bot pediu CPF e cliente forneceu: ${documentoNaMensagem}. Processando consulta...`);
+          intencaoIXC.tipo = "consulta_fatura";
+          intencaoIXC.confianca = 0.95;
+          intencaoIXC.documento = documentoNaMensagem;
+        }
+      }
 
       const normalizedContent = processedContent.toLowerCase();
       // Palavras-chave financeiras mais específicas (removidas palavras genéricas como "valor", "pagar")
@@ -1030,89 +1087,89 @@ export async function processIncomingMessage(
         "pix da conta"
       ];
 
-      // Frases completas que indicam solicitação financeira (não apenas palavras soltas)
-      const isFinanceRequest = financeKeywords.some(keyword => normalizedContent.includes(keyword)) ||
-                               (normalizedContent.includes("fatura") && (normalizedContent.includes("pagar") || normalizedContent.includes("vencimento"))) ||
-                               (normalizedContent.includes("segunda via") && (normalizedContent.includes("boleto") || normalizedContent.includes("fatura")));
+      // Verificar configuração IXC
+      const workspace = await db.getWorkspaceById(workspaceId);
+      const metadata = workspace?.metadata as any;
+      const temConfiguracaoIXC = metadata?.ixcApiUrl && metadata?.ixcApiToken;
 
-      // Aumentar confiança mínima e exigir contexto mais claro
-      if (
-        (intencaoIXC.tipo === "consulta_fatura" && intencaoIXC.confianca > 0.6) ||
-        (isFinanceRequest && intencaoIXC.confianca > 0.5)
-      ) {
-        console.log(`[AI Service] Solicitação financeira detectada (confiança: ${intencaoIXC.confianca}). Transferindo para atendente.`);
-        const saudacao = contact?.name ? `${contact.name},` : "Olá!";
-        const transferenciaFinanceira = `${saudacao} para assuntos de contas, faturas, pagamentos ou PIX, vou transferir você para um atendente humano que pode te ajudar com todos os detalhes. Aguarde só um instante, por favor.`;
-
-        await db.createMessage({
-          conversationId: activeConv.id,
-          senderType: "bot",
-          content: transferenciaFinanceira,
-        });
-
-        try {
-          const { sendTextMessage } = await import("./whatsappService");
-          const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
-          const instance = instances.find(i => i.id === instanceId);
-
-          if (instance && instance.instanceKey) {
-            await sendTextMessage(instance.instanceKey, destinationNumber, transferenciaFinanceira);
-            console.log(`[AI Service] Mensagem financeira de transferência enviada para ${destinationNumber}`);
-          }
-        } catch (error) {
-          console.error(`[AI Service] Erro ao enviar mensagem de transferência financeira:`, error);
-        }
-
-        await db.updateContactKanbanStatus(contactId, "negotiating");
-        console.log(`[AI Service] Contato ${contactId} movido para "Negociando" (assunto financeiro).`);
-        return;
+      // Processar IXC APENAS se:
+      // 1. Cliente forneceu CPF após ser solicitado (botPediuCPF && documentoNaMensagem)
+      // 2. OU intenção muito clara (confiança > 0.8) E já tem documento
+      // Caso contrário, deixar a IA responder primeiro
+      
+      let deveProcessarIXCDireto = false;
+      
+      if (botPediuCPF && documentoNaMensagem) {
+        // Cliente forneceu CPF após ser solicitado - processar diretamente
+        deveProcessarIXCDireto = true;
+        console.log(`[AI Service] Cliente forneceu CPF após solicitação. Processando IXC diretamente.`);
+      } else if (intencaoIXC.confianca > 0.8 && intencaoIXC.documento) {
+        // Intenção muito clara E já tem documento - processar diretamente
+        deveProcessarIXCDireto = true;
+        console.log(`[AI Service] Intenção muito clara (${intencaoIXC.confianca}) com documento. Processando IXC diretamente.`);
       }
 
-      if (intencaoIXC.tipo === "consulta_fatura" && intencaoIXC.confianca > 0.5) {
-        console.log(`[AI Service] IXC: Detectada consulta de fatura (confiança: ${intencaoIXC.confianca})`);
-        botResponse = await processarConsultaFatura(workspaceId, whatsappNumber, intencaoIXC.documento);
-      } else if (intencaoIXC.tipo === "desbloqueio" && intencaoIXC.confianca > 0.5) {
-        console.log(`[AI Service] IXC: Detectado pedido de desbloqueio (confiança: ${intencaoIXC.confianca})`);
-        botResponse = await processarDesbloqueio(workspaceId, whatsappNumber, intencaoIXC.documento);
+      if (deveProcessarIXCDireto && temConfiguracaoIXC && (intencaoIXC.tipo === "consulta_fatura" || intencaoIXC.tipo === "desbloqueio")) {
+        // Processar diretamente com IXC
+        if (intencaoIXC.tipo === "consulta_fatura") {
+          console.log(`[AI Service] Processando consulta de fatura com IXC (documento: ${intencaoIXC.documento})`);
+          botResponse = await processarConsultaFatura(workspaceId, whatsappNumber, intencaoIXC.documento);
+        } else if (intencaoIXC.tipo === "desbloqueio") {
+          console.log(`[AI Service] Processando desbloqueio com IXC (documento: ${intencaoIXC.documento})`);
+          botResponse = await processarDesbloqueio(workspaceId, whatsappNumber, intencaoIXC.documento);
+        }
       } else {
-        // Resposta normal da IA
+        // REATIVAR IA: Se não processou com IXC, deixar IA responder
+        console.log(`[AI Service] Não processou com IXC. Ativando IA para responder...`);
+        
         let finalMessage = processedContent;
         
-        // Log para debug de áudio
         if (mediaType === "audio") {
           console.log(`[AI Service] Processing audio message. Transcribed text: "${processedContent}"`);
-          console.log(`[AI Service] Original messageContent: "${messageContent}"`);
         }
         
         if (resolvedMediaUrl && mediaType === "image") {
           finalMessage = `[O usuário enviou uma imagem. Analise a imagem e responda adequadamente.]\n${processedContent || ""}`;
         }
         
-        console.log(`[AI Service] Calling generateBotResponse with message: "${finalMessage.substring(0, 100)}"`);
-        console.log(`[AI Service] contactInNegotiating: ${contactInNegotiating}`);
-        
         try {
+          console.log(`[AI Service] Chamando generateBotResponse com workspaceId: ${workspaceId}, conversationId: ${activeConv.id}, message: "${finalMessage.substring(0, 50)}"`);
           botResponse = await generateBotResponse(
             workspaceId,
             activeConv.id,
             finalMessage,
             resolvedMediaUrl && mediaType === "image" ? resolvedMediaUrl : undefined,
             mediaType === "image" ? imageKeywordHints : [],
-            contactInNegotiating // Passar informação se está em negotiating
+            contactInNegotiating
           );
           
-          console.log(`[AI Service] Bot response generated: "${botResponse.substring(0, 100)}"`);
-        } catch (generateError: any) {
-          console.error(`[AI Service] Error in generateBotResponse:`, generateError);
-          console.error(`[AI Service] Error stack:`, generateError?.stack);
+          console.log(`[AI Service] IA respondeu: "${botResponse.substring(0, 100)}"`);
           
-          // Se está em negotiating, ainda assim tentar responder com aviso
-          if (contactInNegotiating) {
-            botResponse = "💬 Você já foi transferido para um atendente humano que logo irá te atender!\n\nEnquanto isso, posso responder suas dúvidas:\n\nDesculpe, ocorreu um problema ao processar sua mensagem. Por favor, tente novamente ou aguarde o atendente.";
-          } else {
-            botResponse = "Desculpe, ocorreu um erro ao processar sua mensagem. Um atendente irá te ajudar em breve.";
+          // Se a IA detectou assunto financeiro, redirecionar para fluxo robotizado
+          const botResponseLower = botResponse.toLowerCase();
+          const mencionouFinanceiro = botResponseLower.includes("fatura") || 
+                                      botResponseLower.includes("boleto") ||
+                                      botResponseLower.includes("pagamento") ||
+                                      botResponseLower.includes("débito") ||
+                                      botResponseLower.includes("pagar");
+          
+          if (mencionouFinanceiro && temConfiguracaoIXC) {
+            console.log(`[AI Service] IA mencionou assunto financeiro. Redirecionando para fluxo IXC...`);
+            botResponse = "Entendi que você precisa de ajuda com questões financeiras! 💰\n\nPara consultar suas faturas e boletos, preciso do CPF ou CNPJ do titular da conta.\n\nPor favor, informe o CPF ou CNPJ:";
           }
+        } catch (generateError: any) {
+          console.error(`[AI Service] ❌ ERRO em generateBotResponse:`, generateError);
+          console.error(`[AI Service] ❌ Stack trace:`, generateError?.stack);
+          console.error(`[AI Service] ❌ Message:`, generateError?.message);
+          botResponse = "Desculpe, ocorreu um erro. Como posso te ajudar?";
         }
+      }
+      
+      
+      // Garantir que botResponse sempre tenha um valor antes de usar
+      if (!botResponse || botResponse === "") {
+        console.log(`[AI Service] ⚠️ botResponse vazio após processamento. Usando mensagem padrão.`);
+        botResponse = "Desculpe, não entendi sua solicitação. Por favor, digite:\n\n1️⃣ - Para consultar faturas em aberto\n2️⃣ - Para falar com atendente";
       }
 
       const botResponseLowerCase = botResponse.toLowerCase();
@@ -1233,7 +1290,8 @@ export async function processIncomingMessage(
       // NÃO transferir nas primeiras interações - dar chance para a IA ajudar primeiro
       // IMPORTANTE: Considerar apenas mensagens RECENTES (últimas 2 horas) para evitar transferir por conversas antigas
       const duasHorasAtrasForTransfer = new Date(Date.now() - 2 * 60 * 60 * 1000);
-      const botMessagesForTransfer = messagesForHistory
+      const messagesForHistoryCheck = await db.getMessagesByConversation(activeConv.id);
+      const botMessagesForTransfer = messagesForHistoryCheck
         .filter(m => m.senderType === "bot" && m.createdAt && new Date(m.createdAt) >= duasHorasAtrasForTransfer);
       const jaTentouAjudar = botMessagesForTransfer.length >= 5; // Pelo menos 5 tentativas recentes de ajudar
       

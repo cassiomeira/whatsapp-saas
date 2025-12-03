@@ -270,13 +270,13 @@ export async function updateWhatsappInstanceStatus(id: number, status: string, p
   if (!db) throw new Error("Database not available");
   
   try {
-    const updateData: any = { status: status as any, updatedAt: new Date() };
-    if (qrCode !== undefined) updateData.qrCode = qrCode;
-    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
-    
-    await db.update(whatsappInstances)
-      .set(updateData)
-      .where(eq(whatsappInstances.id, id));
+  const updateData: any = { status: status as any, updatedAt: new Date() };
+  if (qrCode !== undefined) updateData.qrCode = qrCode;
+  if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+  
+  await db.update(whatsappInstances)
+    .set(updateData)
+    .where(eq(whatsappInstances.id, id));
   } catch (error: any) {
     console.error(`[DB] Error updating WhatsApp instance ${id} status:`, error);
     if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {
@@ -291,7 +291,7 @@ export async function deleteWhatsappInstance(id: number) {
   if (!db) throw new Error("Database not available");
   
   try {
-    await db.delete(whatsappInstances).where(eq(whatsappInstances.id, id));
+  await db.delete(whatsappInstances).where(eq(whatsappInstances.id, id));
   } catch (error: any) {
     console.error(`[DB] Error deleting WhatsApp instance ${id}:`, error);
     if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {
@@ -360,9 +360,9 @@ export async function updateContactKanbanStatus(id: number, status: string) {
   if (!db) throw new Error("Database not available");
   
   try {
-    await db.update(contacts)
-      .set({ kanbanStatus: status === "negociating" ? "negotiating" : status, updatedAt: new Date() })
-      .where(eq(contacts.id, id));
+  await db.update(contacts)
+    .set({ kanbanStatus: status === "negociating" ? "negotiating" : status, updatedAt: new Date() })
+    .where(eq(contacts.id, id));
   } catch (error: any) {
     console.error(`[DB] Error updating contact ${id} kanban status:`, error);
     if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {
