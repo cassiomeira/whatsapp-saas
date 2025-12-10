@@ -39,6 +39,36 @@ import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
+export function normalizePhone(raw: string): string {
+  let n = raw.replace(/[^\d]/g, "");
+
+  // remover prefixos de operadora e zeros à esquerda
+  while (n.startsWith("0")) n = n.slice(1);
+  if (n.startsWith("15") && n.length > 11) n = n.slice(2); // prefixo de operadora (ex: 015)
+
+  // ajustar DDI duplicado/zero extra após 55
+  if (n.startsWith("550")) {
+    n = "55" + n.slice(3);
+  }
+
+  // se muito longo com 55 no início, manter apenas os últimos 11 dígitos após o 55
+  if (n.length > 13 && n.startsWith("55")) {
+    n = "55" + n.slice(-11);
+  }
+
+  // se não tiver DDI e tiver 10 ou 11 dígitos, prefixar 55
+  if (!n.startsWith("55") && (n.length === 10 || n.length === 11)) {
+    n = "55" + n;
+  }
+
+  // remover eventuais repetições 5555
+  while (n.startsWith("5555")) {
+    n = "55" + n.slice(4);
+  }
+
+  return n;
+}
+
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
@@ -641,11 +671,17 @@ export async function getContactsByWorkspace(workspaceId: number) {
 export async function getContactByNumber(workspaceId: number, whatsappNumber: string) {
   const db = await getDb();
   if (!db) return undefined;
+
+  const normalized = normalizePhone(whatsappNumber);
   
   const result = await db.select().from(contacts)
     .where(and(
       eq(contacts.workspaceId, workspaceId),
-      eq(contacts.whatsappNumber, whatsappNumber)
+      or(
+        eq(contacts.whatsappNumber, normalized),
+        eq(contacts.whatsappNumber, `+${normalized}`),
+        eq(contacts.whatsappNumber, whatsappNumber)
+      )
     ))
     .limit(1);
   
@@ -666,6 +702,41 @@ export async function getContactsByIds(workspaceId: number, contactIds: number[]
         inArray(contacts.id, contactIds)
       )
     );
+}
+
+export async function deleteContactFully(workspaceId: number, contactId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Buscar conversas do contato
+  const convs = await db
+    .select()
+    .from(conversations)
+    .where(and(eq(conversations.workspaceId, workspaceId), eq(conversations.contactId, contactId)));
+
+  for (const conv of convs) {
+    await db.delete(messages).where(eq(messages.conversationId, conv.id));
+    await db.delete(conversations).where(eq(conversations.id, conv.id));
+  }
+
+  await db.delete(contacts).where(and(eq(contacts.workspaceId, workspaceId), eq(contacts.id, contactId)));
+}
+
+export async function deleteAllContacts(workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const convs = await db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.workspaceId, workspaceId));
+
+  for (const conv of convs) {
+    await db.delete(messages).where(eq(messages.conversationId, conv.id));
+    await db.delete(conversations).where(eq(conversations.id, conv.id));
+  }
+
+  await db.delete(contacts).where(eq(contacts.workspaceId, workspaceId));
 }
 
 export async function updateContactKanbanStatus(id: number, status: string) {

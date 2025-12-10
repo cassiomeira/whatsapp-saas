@@ -4,7 +4,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
-import { getWorkspaceIxcMetrics, getIxcEvents, getContactStatusEvents, getContactSla } from "./db";
+import { getWorkspaceIxcMetrics, getIxcEvents, getContactStatusEvents, getContactSla, deleteContactFully, deleteAllContacts, createContact, getContactByNumber, normalizePhone } from "./db";
 import { processIncomingMessage } from "./aiService";
 import { getEvolutionService } from "./evolutionService";
 import { TRPCError } from "@trpc/server";
@@ -388,6 +388,127 @@ export const appRouter = router({
       return db.getContactsByWorkspace(ctx.user.workspaceId);
     }),
 
+    // Importar contatos via VCF
+    importVcf: protectedProcedure
+      .input(z.object({
+        vcfText: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        const cards = input.vcfText
+          .split(/BEGIN:VCARD/i)
+          .map((chunk) => chunk.trim())
+          .filter((chunk) => chunk.length > 0)
+          .map((chunk) => `BEGIN:VCARD\n${chunk}`);
+
+        let created = 0;
+        let skipped = 0;
+
+        for (const card of cards) {
+          const nameMatch = card.match(/FN:(.+)/i);
+          const name = nameMatch ? nameMatch[1].trim() : null;
+
+          const telMatches = Array.from(card.matchAll(/TEL[^:]*:([^\r\n]+)/gi));
+          if (!telMatches.length) continue;
+
+          for (const tel of telMatches) {
+            const rawPhone = (tel[1] || "").trim();
+            if (!rawPhone) continue;
+            const normalized = normalizePhone(rawPhone);
+            if (!normalized) continue;
+
+            const exists = await getContactByNumber(ctx.user.workspaceId, normalized);
+            if (exists) {
+              skipped += 1;
+              continue;
+            }
+
+            await createContact({
+              workspaceId: ctx.user.workspaceId,
+              whatsappNumber: normalized,
+              name,
+              // Não colocar no Kanban; só aparecerá quando houver conversa/mensagem
+              kanbanStatus: "archived",
+              metadata: { imported: true },
+            });
+            created += 1;
+          }
+        }
+
+        return { created, skipped };
+      }),
+
+    // Importar contatos via CSV (name;whatsappNumber;kanbanStatus)
+    importCsv: protectedProcedure
+      .input(z.object({
+        csvText: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        const lines = input.csvText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+        if (lines.length === 0) return { created: 0, skipped: 0 };
+
+        // Detectar header
+        const header = lines[0].toLowerCase();
+        const hasHeader = header.includes("whatsapp") || header.includes("name") || header.includes("kanban");
+        const startIndex = hasHeader ? 1 : 0;
+
+        let created = 0;
+        let skipped = 0;
+
+        for (let i = startIndex; i < lines.length; i++) {
+          const cols = lines[i].split(";").map(c => c.trim().replace(/^"|"$/g, ""));
+          if (cols.length < 2) continue;
+          const name = cols[0] || null;
+          const rawPhone = cols[1] || "";
+          if (!rawPhone) continue;
+          const normalized = normalizePhone(rawPhone);
+          if (!normalized) continue;
+
+          const exists = await getContactByNumber(ctx.user.workspaceId, normalized);
+          if (exists) {
+            skipped += 1;
+            continue;
+          }
+
+          await createContact({
+            workspaceId: ctx.user.workspaceId,
+            whatsappNumber: normalized,
+            name,
+            kanbanStatus: "archived",
+            metadata: { imported: true },
+          });
+          created += 1;
+        }
+
+        return { created, skipped };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ contactId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        await deleteContactFully(ctx.user.workspaceId, input.contactId);
+        return { success: true };
+      }),
+
+    deleteAll: protectedProcedure
+      .mutation(async ({ ctx }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        await deleteAllContacts(ctx.user.workspaceId);
+        return { success: true };
+      }),
+
     // Atualizar status do Kanban
     updateKanbanStatus: protectedProcedure
       .input(z.object({
@@ -469,7 +590,7 @@ export const appRouter = router({
         }
 
         // Normalizar número (remover caracteres não numéricos, exceto +)
-        const normalizedNumber = input.whatsappNumber.replace(/[^\d+]/g, "");
+        const normalizedNumber = normalizePhone(input.whatsappNumber);
         
         // Buscar ou criar contato
         let contact = await db.getContactByNumber(ctx.user.workspaceId, normalizedNumber);
