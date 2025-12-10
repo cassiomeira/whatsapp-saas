@@ -1,5 +1,7 @@
 import { getIXCService, IXCFatura } from "./ixcService";
 import * as db from "./db";
+import { createIxcEvent } from "./db";
+import { incrementIxcMetric } from "./db";
 
 /**
  * Detectar CPF ou CNPJ na mensagem
@@ -96,7 +98,9 @@ export function detectarIntencaoIXC(mensagem: string): {
 export async function processarConsultaFatura(
   workspaceId: number,
   telefone: string,
-  documento?: string
+  documento?: string,
+  contactId?: number,
+  conversationId?: number
 ): Promise<string> {
   try {
     console.log(`[IXC AI Helper] processarConsultaFatura chamado - workspaceId: ${workspaceId}, telefone: ${telefone}, documento: ${documento}`);
@@ -114,6 +118,15 @@ export async function processarConsultaFatura(
 
     if (!metadata?.ixcApiUrl || !metadata?.ixcApiToken) {
       console.log(`[IXC AI Helper] ⚠️ Configuração IXC não encontrada! ixcApiUrl: ${!!metadata?.ixcApiUrl}, ixcApiToken: ${!!metadata?.ixcApiToken}`);
+      await incrementIxcMetric(workspaceId, "consulta", false);
+      await createIxcEvent({
+        workspaceId,
+        contactId,
+        conversationId,
+        type: "consulta",
+        status: "fail",
+        message: `Configuração IXC ausente | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+      });
       return "No momento não consigo consultar sua fatura automaticamente. Vou transferir você para um atendente humano para que ele confirme essas informações, tudo bem?";
     }
     
@@ -125,6 +138,15 @@ export async function processarConsultaFatura(
     });
 
     if (!ixcService) {
+      await incrementIxcMetric(workspaceId, "consulta", false);
+      await createIxcEvent({
+        workspaceId,
+        contactId,
+        conversationId,
+        type: "consulta",
+        status: "fail",
+        message: `Erro ao conectar com o IXC | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+      });
       return "Erro ao conectar com o sistema de faturas.";
     }
 
@@ -152,9 +174,27 @@ export async function processarConsultaFatura(
     if (!cliente) {
       // Se não tem documento, pedir CPF
       if (!documento) {
+        await incrementIxcMetric(workspaceId, "consulta", false);
+        await createIxcEvent({
+          workspaceId,
+          contactId,
+          conversationId,
+          type: "consulta",
+          status: "fail",
+          message: `Cliente não identificado (falta CPF/CNPJ) | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+        });
         return "Para consultar suas faturas, preciso do CPF ou CNPJ do titular da conta. Pode me informar, por favor?";
       }
       // Se tem documento mas não encontrou, pode ser que o documento esteja incorreto
+      await incrementIxcMetric(workspaceId, "consulta", false);
+      await createIxcEvent({
+        workspaceId,
+        contactId,
+        conversationId,
+        type: "consulta",
+        status: "fail",
+        message: `Cliente não encontrado com o documento informado | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+      });
       return "Não encontrei seu cadastro em nosso sistema com o documento informado. Pode verificar e me informar o CPF ou CNPJ correto, por favor?";
     }
 
@@ -192,6 +232,15 @@ export async function processarConsultaFatura(
     console.log(`[IXC AI Helper] Total vencidas: ${faturasVencidas.length}`);
 
     if (faturasVencidas.length === 0) {
+      await incrementIxcMetric(workspaceId, "consulta", true);
+      await createIxcEvent({
+        workspaceId,
+        contactId,
+        conversationId,
+        type: "consulta",
+        status: "success",
+        message: `Sem faturas em atraso para ${cliente.razao} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+      });
       return `Olá ${cliente.razao}! 😊\n\nConsultei seu cadastro e não há faturas em atraso no momento. Você está em dia com seus pagamentos! ✅`;
     }
 
@@ -258,11 +307,41 @@ export async function processarConsultaFatura(
             nomeArquivo: `Boleto_${fatura.id}.pdf`
           });
           console.log(`[IXC AI Helper] ✅ Boleto ${fatura.id} baixado com sucesso (${resultadoBoleto.pdfBase64.length} bytes)`);
+          await incrementIxcMetric(workspaceId, "boleto", true);
+          await createIxcEvent({
+            workspaceId,
+            contactId,
+            conversationId,
+            type: "boleto",
+            status: "success",
+            invoiceId: fatura.id,
+            message: `Boleto ${fatura.id} enviado | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+          });
         } else {
           console.error(`[IXC AI Helper] ❌ Erro ao baixar boleto ${fatura.id}:`, resultadoBoleto.error);
+          await incrementIxcMetric(workspaceId, "boleto", false);
+          await createIxcEvent({
+            workspaceId,
+            contactId,
+            conversationId,
+            type: "boleto",
+            status: "fail",
+            invoiceId: fatura.id,
+            message: `${resultadoBoleto.error || "Falha ao baixar boleto"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+          });
         }
       } catch (error) {
         console.error(`[IXC AI Helper] Exceção ao baixar boleto ${fatura.id}:`, error);
+        await incrementIxcMetric(workspaceId, "boleto", false);
+        await createIxcEvent({
+          workspaceId,
+          contactId,
+          conversationId,
+          type: "boleto",
+          status: "fail",
+          invoiceId: fatura.id,
+          message: `${(error as any)?.message || "Exceção ao baixar boleto"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+        });
       }
     }
 
@@ -280,6 +359,15 @@ export async function processarConsultaFatura(
     // Se houver boletos, retornar como JSON para processamento especial
     if (boletosParaEnviar.length > 0) {
       console.log(`[IXC AI Helper] Retornando resposta com ${boletosParaEnviar.length} boleto(s) como JSON`);
+      await incrementIxcMetric(workspaceId, "consulta", true);
+      await createIxcEvent({
+        workspaceId,
+        contactId,
+        conversationId,
+        type: "consulta",
+        status: "success",
+        message: `Consulta com ${boletosParaEnviar.length} boleto(s) | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+      });
       return JSON.stringify({
         tipo: 'consulta_com_boletos',
         mensagem: resposta,
@@ -289,9 +377,27 @@ export async function processarConsultaFatura(
     
     // Se não houver boletos, retornar apenas a mensagem
     console.log(`[IXC AI Helper] Nenhum boleto baixado, retornando apenas mensagem de texto`);
+    await incrementIxcMetric(workspaceId, "consulta", true);
+    await createIxcEvent({
+      workspaceId,
+      contactId,
+      conversationId,
+      type: "consulta",
+      status: "success",
+      message: `Consulta sem boleto (retorno texto) | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+    });
     return resposta;
   } catch (error: any) {
     console.error("[IXC AI Helper] Erro ao consultar fatura:", error);
+    await incrementIxcMetric(workspaceId, "consulta", false);
+    await createIxcEvent({
+      workspaceId,
+      contactId,
+      conversationId,
+      type: "consulta",
+      status: "fail",
+      message: `${error?.message || "Erro geral na consulta"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+    });
     return "Desculpe, ocorreu um imprevisto na consulta da fatura. Vou transferir você agora para um atendente humano continuar o atendimento, certo?";
   }
 }
@@ -302,7 +408,9 @@ export async function processarConsultaFatura(
 export async function processarDesbloqueio(
   workspaceId: number,
   telefone: string,
-  documento?: string
+  documento?: string,
+  contactId?: number,
+  conversationId?: number
 ): Promise<string> {
   try {
     // Buscar configuração IXC do workspace
@@ -310,6 +418,7 @@ export async function processarDesbloqueio(
     const metadata = workspace?.metadata as any;
 
     if (!metadata?.ixcApiUrl || !metadata?.ixcApiToken) {
+      await incrementIxcMetric(workspaceId, "desbloqueio", false);
       return "Ainda não consigo fazer esse desbloqueio automaticamente. Vou transferir você para um atendente humano resolver isso rapidinho, tudo bem?";
     }
 
@@ -319,6 +428,7 @@ export async function processarDesbloqueio(
     });
 
     if (!ixcService) {
+      await incrementIxcMetric(workspaceId, "desbloqueio", false);
       return "Erro ao conectar com o sistema.";
     }
 
@@ -346,9 +456,11 @@ export async function processarDesbloqueio(
     if (!cliente) {
       // Se não tem documento, pedir CPF
       if (!documento) {
+        await incrementIxcMetric(workspaceId, "desbloqueio", false);
         return "Para realizar o desbloqueio, preciso do CPF ou CNPJ do titular da conta. Pode me informar, por favor?";
       }
       // Se tem documento mas não encontrou, pode ser que o documento esteja incorreto
+      await incrementIxcMetric(workspaceId, "desbloqueio", false);
       return "Não encontrei seu cadastro em nosso sistema com o documento informado. Pode verificar e me informar o CPF ou CNPJ correto, por favor?";
     }
 
@@ -364,17 +476,53 @@ export async function processarDesbloqueio(
       
       if (resultado.success) {
         console.log(`[IXC AI Helper] ✅ Desbloqueio executado com sucesso`);
+        await incrementIxcMetric(workspaceId, "desbloqueio", true);
+        await createIxcEvent({
+          workspaceId,
+          contactId,
+          conversationId,
+          type: "desbloqueio",
+          status: "success",
+          message: `${resultado.message || "Desbloqueio realizado com sucesso"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+        });
         return `✅ Desbloqueio de confiança realizado com sucesso!\n\n${cliente.razao}, seu acesso foi liberado! 🎉\n\nSeu contrato foi desbloqueado por 3 dias. Caso não regularize a situação financeira até lá, voltará a ser automaticamente bloqueado.\n\nPrecisa de mais alguma ajuda? 😊`;
       } else {
         console.log(`[IXC AI Helper] ❌ Desbloqueio falhou: ${resultado.message}`);
+        await incrementIxcMetric(workspaceId, "desbloqueio", false);
+        await createIxcEvent({
+          workspaceId,
+          contactId,
+          conversationId,
+          type: "desbloqueio",
+          status: "fail",
+          message: `${resultado.message || "Desbloqueio falhou"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+        });
         return `❌ Não foi possível realizar o desbloqueio no momento.\n\nMotivo: ${resultado.message}\n\nPor favor, entre em contato com o suporte para mais informações.`;
       }
     } catch (error: any) {
       console.error(`[IXC AI Helper] Erro ao executar desbloqueio nativo:`, error);
+      await incrementIxcMetric(workspaceId, "desbloqueio", false);
+      await createIxcEvent({
+        workspaceId,
+        contactId,
+        conversationId,
+        type: "desbloqueio",
+        status: "fail",
+        message: `${error?.message || "Exceção ao executar desbloqueio"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+      });
       return `❌ Erro ao processar desbloqueio.\n\nPor favor, entre em contato com o suporte.`;
     }
   } catch (error: any) {
     console.error("[IXC AI Helper] Erro ao processar desbloqueio:", error);
+    await incrementIxcMetric(workspaceId, "desbloqueio", false);
+    await createIxcEvent({
+      workspaceId,
+      contactId,
+      conversationId,
+      type: "desbloqueio",
+      status: "fail",
+      message: `${error?.message || "Exceção geral ao processar desbloqueio"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+    });
     return "Desculpe, ocorreu um imprevisto ao tentar desbloquear agora. Vou transferir você para um atendente humano ajudar imediatamente, combinado?";
   }
 }

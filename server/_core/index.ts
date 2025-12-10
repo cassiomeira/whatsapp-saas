@@ -6,6 +6,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { handleEvolutionWebhook } from "../webhookHandler";
+import { initAuxTables } from "../db";
 import { serveStatic, setupVite } from "./vite";
 
 process.on("uncaughtException", (error) => {
@@ -36,6 +37,13 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  // Garantir tabelas auxiliares (eventos IXC e SLA de status)
+  try {
+    await initAuxTables();
+  } catch (err) {
+    console.warn("[Startup] Falha ao inicializar tabelas auxiliares:", err);
+  }
+
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads

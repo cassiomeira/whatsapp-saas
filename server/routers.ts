@@ -4,6 +4,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
+import { getWorkspaceIxcMetrics, getIxcEvents, getContactStatusEvents, getContactSla } from "./db";
 import { processIncomingMessage } from "./aiService";
 import { getEvolutionService } from "./evolutionService";
 import { TRPCError } from "@trpc/server";
@@ -106,6 +107,126 @@ async function ensureContactsForNumbers(workspaceId: number, numbers: string[]):
 
 export const appRouter = router({
   system: systemRouter,
+
+  analytics: router({
+    ixc: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user?.workspaceId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Workspace não encontrado" });
+      }
+      return getWorkspaceIxcMetrics(ctx.user.workspaceId);
+    }),
+    ixcEvents: protectedProcedure
+      .input(z.object({
+        type: z.enum(["consulta", "boleto", "desbloqueio"]).optional(),
+        status: z.enum(["success", "fail"]).optional(),
+        limit: z.number().min(1).max(200).optional(),
+      }).optional())
+      .query(async ({ ctx, input }) => {
+        if (!ctx.user?.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Workspace não encontrado" });
+        }
+        return getIxcEvents(ctx.user.workspaceId, {
+          type: input?.type,
+          status: input?.status,
+          limit: input?.limit,
+        });
+      }),
+    sla: protectedProcedure
+      .input(z.object({
+        from: z.number().optional(), // timestamp (s)
+        to: z.number().optional(),   // timestamp (s)
+      }).optional())
+      .query(async ({ ctx, input }) => {
+        if (!ctx.user?.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Workspace não encontrado" });
+        }
+
+        const now = Math.floor(Date.now() / 1000);
+        const events = await getContactStatusEvents(ctx.user.workspaceId, {
+          from: input?.from,
+          to: input?.to,
+        });
+
+        // Agrupar por contato e ordenar por tempo
+        const byContact: Record<number, typeof events> = {};
+        for (const ev of events) {
+          if (!byContact[ev.contactId]) byContact[ev.contactId] = [];
+          byContact[ev.contactId].push(ev);
+        }
+        Object.values(byContact).forEach(list => list.sort((a, b) => a.changedAt - b.changedAt));
+
+        const perStatus: Record<string, { totalSeconds: number; transitions: number }> = {};
+        const perAttendant: Record<string, { totalSeconds: number; transitions: number }> = {};
+
+        for (const list of Object.values(byContact)) {
+          let lastStatus = list[0]?.statusFrom || list[0]?.statusTo || "desconhecido";
+          let lastAssigned = list[0]?.assignedToId ?? null;
+          let lastTime = list[0]?.changedAt || now;
+
+          for (const ev of list) {
+            const duration = Math.max(0, ev.changedAt - lastTime);
+            const keyStatus = lastStatus;
+            perStatus[keyStatus] = perStatus[keyStatus] || { totalSeconds: 0, transitions: 0 };
+            perStatus[keyStatus].totalSeconds += duration;
+            perStatus[keyStatus].transitions += 1;
+
+            const keyAtt = lastAssigned !== null && lastAssigned !== undefined ? String(lastAssigned) : "sem_atendente";
+            perAttendant[keyAtt] = perAttendant[keyAtt] || { totalSeconds: 0, transitions: 0 };
+            perAttendant[keyAtt].totalSeconds += duration;
+            perAttendant[keyAtt].transitions += 1;
+
+            lastStatus = ev.statusTo;
+            lastAssigned = ev.assignedToId ?? null;
+            lastTime = ev.changedAt;
+          }
+
+          // tempo até agora no status atual
+          const tailDuration = Math.max(0, now - lastTime);
+          const keyStatusTail = lastStatus;
+          perStatus[keyStatusTail] = perStatus[keyStatusTail] || { totalSeconds: 0, transitions: 0 };
+          perStatus[keyStatusTail].totalSeconds += tailDuration;
+          perStatus[keyStatusTail].transitions += 1;
+
+          const keyAttTail = lastAssigned !== null && lastAssigned !== undefined ? String(lastAssigned) : "sem_atendente";
+          perAttendant[keyAttTail] = perAttendant[keyAttTail] || { totalSeconds: 0, transitions: 0 };
+          perAttendant[keyAttTail].totalSeconds += tailDuration;
+          perAttendant[keyAttTail].transitions += 1;
+        }
+
+        const perStatusArr = Object.entries(perStatus).map(([status, v]) => ({
+          status,
+          totalSeconds: v.totalSeconds,
+          transitions: v.transitions,
+          averageSeconds: v.transitions > 0 ? v.totalSeconds / v.transitions : 0,
+        }));
+
+        const perAttendantArr = Object.entries(perAttendant).map(([att, v]) => ({
+          attendantId: att === "sem_atendente" ? null : Number(att),
+          totalSeconds: v.totalSeconds,
+          transitions: v.transitions,
+          averageSeconds: v.transitions > 0 ? v.totalSeconds / v.transitions : 0,
+        }));
+
+        return {
+          perStatus: perStatusArr,
+          perAttendant: perAttendantArr,
+          totalEvents: events.length,
+        };
+      }),
+
+    slaContact: protectedProcedure
+      .input(z.object({
+        contactId: z.number(),
+        from: z.number().optional(),
+        to: z.number().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        if (!ctx.user?.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Workspace não encontrado" });
+        }
+        return getContactSla(ctx.user.workspaceId, input.contactId, input.from, input.to);
+      }),
+  }),
 
   auth: router({
     me: publicProcedure.query(async ({ ctx }) => {

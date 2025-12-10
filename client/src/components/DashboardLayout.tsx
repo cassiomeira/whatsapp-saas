@@ -198,11 +198,11 @@ function DashboardLayoutContent({
               {isCollapsed ? (
                 <div className="relative h-8 w-8 shrink-0 group">
                   {workspaceLogo ? (
-                    <img
+                  <img
                       src={workspaceLogo}
-                      className="h-8 w-8 rounded-md object-cover ring-1 ring-border"
-                      alt="Logo"
-                    />
+                    className="h-8 w-8 rounded-md object-cover ring-1 ring-border"
+                    alt="Logo"
+                  />
                   ) : (
                     <div className="h-8 w-8 rounded-md bg-muted flex items-center justify-center text-sm font-semibold">
                       {APP_TITLE.charAt(0)}
@@ -219,11 +219,11 @@ function DashboardLayoutContent({
                 <>
                   <div className="flex items-center gap-3 min-w-0">
                     {workspaceLogo ? (
-                      <img
+                    <img
                         src={workspaceLogo}
-                        className="h-8 w-8 rounded-md object-cover ring-1 ring-border shrink-0"
-                        alt="Logo"
-                      />
+                      className="h-8 w-8 rounded-md object-cover ring-1 ring-border shrink-0"
+                      alt="Logo"
+                    />
                     ) : (
                       <div className="h-8 w-8 rounded-md bg-muted flex items-center justify-center text-sm font-semibold shrink-0">
                         {APP_TITLE.charAt(0)}

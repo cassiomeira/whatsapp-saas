@@ -241,6 +241,7 @@ export default function Kanban() {
   const archiveContactMutation = trpc.contacts.archive.useMutation();
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const sellerColumns: SellerColumn[] = Array.isArray(
     (workspace?.metadata as any)?.kanbanSellerColumns
   )
@@ -674,11 +675,16 @@ function ChatPanel({ contactId }: { contactId: number }) {
   const [isRecording, setIsRecording] = useState(false);
   const [isFFmpegLoading, setIsFFmpegLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const ffmpegLoadPromiseRef = useRef<Promise<FFmpeg | null> | null>(null);
+  const isUserScrollingRef = useRef(false);
+  const wasAtBottomRef = useRef(true);
+  const previousMessagesLengthRef = useRef(0);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   
   const { data: conversations } = trpc.conversations.list.useQuery();
   const conversation = conversations?.find(c => c.contactId === contactId);
@@ -689,10 +695,66 @@ function ChatPanel({ contactId }: { contactId: number }) {
   const sendMessage = trpc.messages.send.useMutation();
   const uploadMedia = trpc.messages.uploadMedia.useMutation();
 
-  // Scroll automático para a última mensagem
+  // Verificar se o usuário está no final do scroll
+  const checkIfAtBottom = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return false;
+    
+    const threshold = 100; // Margem de erro de 100px
+    const isAtBottom = 
+      container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
+    
+    wasAtBottomRef.current = isAtBottom;
+    return isAtBottom;
+  };
+
+  // Scroll automático apenas se o usuário estiver no final
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Se novas mensagens foram adicionadas (não apenas atualização)
+    const hasNewMessages = messages && messages.length > previousMessagesLengthRef.current;
+    previousMessagesLengthRef.current = messages?.length || 0;
+
+    // Só fazer scroll automático se:
+    // 1. O usuário estava no final do scroll (não estava lendo mensagens antigas)
+    // 2. OU novas mensagens foram adicionadas (sempre mostrar novas mensagens)
+    if (wasAtBottomRef.current || hasNewMessages) {
+      // Pequeno delay para garantir que o DOM foi atualizado
+      setTimeout(() => {
+        if (!isUserScrollingRef.current) {
+          messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }
+      }, 100);
+    }
   }, [messages]);
+
+  // Detectar quando o usuário está rolando manualmente
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    let scrollTimeout: NodeJS.Timeout;
+    
+    const handleScroll = () => {
+      isUserScrollingRef.current = true;
+      checkIfAtBottom();
+      
+      // Resetar flag após 1 segundo sem scroll
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        isUserScrollingRef.current = false;
+      }, 1000);
+    };
+
+    container.addEventListener('scroll', handleScroll);
+    
+    // Verificar posição inicial
+    checkIfAtBottom();
+    
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      clearTimeout(scrollTimeout);
+    };
+  }, [conversation?.id]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -922,22 +984,16 @@ function ChatPanel({ contactId }: { contactId: number }) {
         setIsRecording(false);
         stream.getTracks().forEach(track => track.stop());
         
-        // Informar sobre o formato gravado
-        if (selectedFormat.ext === "ogg") {
-          toast.success("Áudio gravado em OGG (formato compatível com WhatsApp)!");
-        } else if (selectedFormat.ext === "webm") {
-          toast.warning("Áudio gravado em WebM. Será convertido para OGG ao enviar.");
-        } else {
-          toast.info(`Áudio gravado em ${selectedFormat.name}`);
-        }
+        // Registrar no log o formato gravado (sem exibir toast para não cobrir os botões)
+        console.log(`[Audio] Áudio gravado em ${selectedFormat.name} (${selectedFormat.mime || "padrão"})`);
       };
       
       recorder.start();
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
       
-      // Mostrar qual formato está sendo usado
-      toast.info(`Gravando em ${selectedFormat.name}...`);
+      // Mostrar no log qual formato está sendo usado (sem toast para não atrapalhar UI)
+      console.log(`[Audio] Gravando em ${selectedFormat.name}...`);
     } catch (error) {
       toast.error("Erro ao iniciar gravação de áudio");
       console.error("Error starting audio recording:", error);
@@ -1085,7 +1141,7 @@ function ChatPanel({ contactId }: { contactId: number }) {
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto p-4">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4">
         <div className="space-y-4">
           {!conversation ? (
             <div className="text-center text-sm text-muted-foreground">
@@ -1112,11 +1168,23 @@ function ChatPanel({ contactId }: { contactId: number }) {
                 >
                   {/* Exibir mídia se houver */}
                   {msg.mediaUrl && msg.messageType === "image" && (
-                    <img 
-                      src={msg.mediaUrl} 
-                      alt="Imagem" 
-                      className="max-w-full h-auto rounded-md mb-2 max-h-64 object-cover" 
-                    />
+                    <div className="mb-2 space-y-1">
+                      <img 
+                        src={msg.mediaUrl} 
+                        alt="Imagem" 
+                        className="max-w-full h-auto rounded-md max-h-64 object-cover cursor-zoom-in" 
+                        onClick={() => setPreviewImageUrl(msg.mediaUrl!)}
+                      />
+                      <a
+                        href={msg.mediaUrl}
+                        download
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs underline"
+                      >
+                        Baixar imagem
+                      </a>
+                    </div>
                   )}
                   {msg.mediaUrl && msg.messageType === "audio" && (
                     <audio 
@@ -1244,6 +1312,31 @@ function ChatPanel({ contactId }: { contactId: number }) {
           </Button>
         </div>
       </div>
+
+      {/* Modal de visualização de imagem */}
+      <Dialog open={!!previewImageUrl} onOpenChange={(open) => !open && setPreviewImageUrl(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Imagem</DialogTitle>
+          </DialogHeader>
+          {previewImageUrl ? (
+            <div className="space-y-3">
+              <img src={previewImageUrl} alt="Imagem" className="w-full h-auto rounded-md" />
+              <div className="text-right">
+                <a
+                  href={previewImageUrl}
+                  download
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline text-sm"
+                >
+                  Baixar
+                </a>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

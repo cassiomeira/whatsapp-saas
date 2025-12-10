@@ -28,6 +28,12 @@ import {
   campaignAudiences,
   InsertCampaignAudience,
   campaignAudienceMembers,
+  ixcEvents,
+  InsertIxcEvent,
+  IxcEvent,
+  contactStatusEvents,
+  InsertContactStatusEvent,
+  ContactStatusEvent,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -171,6 +177,313 @@ export async function updateWorkspaceMetadata(id: number, updater: (metadata: an
     .where(eq(workspaces.id, id));
 
   return nextMetadata;
+}
+
+export type IxcMetricType = "consulta" | "boleto" | "desbloqueio";
+
+export async function incrementIxcMetric(
+  workspaceId: number,
+  type: IxcMetricType,
+  success: boolean
+) {
+  await updateWorkspaceMetadata(workspaceId, (metadata: any = {}) => {
+    const current = metadata.ixcStats ?? {};
+    const safe = {
+      consulta: { success: 0, fail: 0, ...(current.consulta || {}) },
+      boleto: { success: 0, fail: 0, ...(current.boleto || {}) },
+      desbloqueio: { success: 0, fail: 0, ...(current.desbloqueio || {}) },
+    };
+
+    const target = safe[type];
+    if (success) target.success = (target.success || 0) + 1;
+    else target.fail = (target.fail || 0) + 1;
+
+    return { ...metadata, ixcStats: safe };
+  });
+}
+
+export async function getWorkspaceIxcMetrics(workspaceId: number) {
+  const workspace = await getWorkspaceById(workspaceId);
+  const stats = (workspace?.metadata as any)?.ixcStats ?? {};
+  return {
+    consulta: { success: 0, fail: 0, ...(stats.consulta || {}) },
+    boleto: { success: 0, fail: 0, ...(stats.boleto || {}) },
+    desbloqueio: { success: 0, fail: 0, ...(stats.desbloqueio || {}) },
+  };
+}
+
+/**
+ * IXC Events helpers (consultas, boletos, desbloqueios)
+ */
+async function ensureIxcEventsTable() {
+  const db = await getDb();
+  if (!db) return;
+  const runner = (db as any).run ?? (db as any).execute;
+  if (!runner) {
+    console.warn("[DB] ensureIxcEventsTable: no runner available");
+    return;
+  }
+  try {
+    await runner(sql`
+      CREATE TABLE IF NOT EXISTS ixc_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspaceId INTEGER NOT NULL,
+        contactId INTEGER,
+        conversationId INTEGER,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        invoiceId INTEGER,
+        message TEXT,
+        createdAt INTEGER DEFAULT (strftime('%s', 'now'))
+      )
+    `);
+  } catch (err) {
+    console.error("[DB] ensureIxcEventsTable failed:", err);
+  }
+}
+
+export async function createIxcEvent(event: Omit<InsertIxcEvent, "id" | "createdAt">) {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await ensureIxcEventsTable();
+    await db.insert(ixcEvents).values(event);
+    console.log(`[DB] Evento IXC gravado: ${event.type} - ${event.status}`);
+  } catch (error) {
+    console.error(`[DB] Erro ao gravar evento IXC:`, error);
+  }
+
+  // Fallback: registrar também no metadata (histórico curto) para garantir visualização
+  try {
+    const workspace = await getWorkspaceById(event.workspaceId);
+    const metadata = (workspace?.metadata as any) || {};
+    const lista = Array.isArray(metadata.ixcEventsRecent) ? metadata.ixcEventsRecent : [];
+    const novo = {
+      id: Date.now(),
+      workspaceId: event.workspaceId,
+      contactId: event.contactId ?? null,
+      conversationId: event.conversationId ?? null,
+      type: event.type,
+      status: event.status,
+      invoiceId: event.invoiceId ?? null,
+      message: event.message ?? "",
+      createdAt: Math.floor(Date.now() / 1000),
+    };
+    const atualizada = [novo, ...lista].slice(0, 100); // manter últimos 100
+    await updateWorkspaceMetadata(event.workspaceId, (m: any = {}) => ({
+      ...m,
+      ixcEventsRecent: atualizada,
+    }));
+  } catch (err) {
+    console.warn("[DB] Não foi possível atualizar ixcEventsRecent no metadata:", err);
+  }
+}
+
+export async function getIxcEvents(
+  workspaceId: number,
+  filters?: {
+    type?: "consulta" | "boleto" | "desbloqueio";
+    status?: "success" | "fail";
+    limit?: number;
+  }
+): Promise<IxcEvent[]> {
+  const db = await getDb();
+  const limit = Math.min(filters?.limit ?? 50, 200);
+  let results: IxcEvent[] = [];
+
+  if (db) {
+    try {
+      await ensureIxcEventsTable();
+      const whereClauses = [eq(ixcEvents.workspaceId, workspaceId)];
+      if (filters?.type) whereClauses.push(eq(ixcEvents.type, filters.type));
+      if (filters?.status) whereClauses.push(eq(ixcEvents.status, filters.status));
+
+      console.log(`[DB] Buscando eventos IXC para workspace ${workspaceId} com filtros:`, filters);
+
+      results = await db
+        .select()
+        .from(ixcEvents)
+        .where(and(...whereClauses))
+        .orderBy(desc(ixcEvents.id))
+        .limit(limit);
+
+      console.log(`[DB] Eventos encontrados: ${results.length}`);
+    } catch (error) {
+      console.error("[DB] Erro ao buscar eventos IXC:", error);
+    }
+  }
+
+  // Fallback para metadata se não houver resultados no banco
+  if (!results || results.length === 0) {
+    const workspace = await getWorkspaceById(workspaceId);
+    const metadata = (workspace?.metadata as any) || {};
+    const lista = Array.isArray(metadata.ixcEventsRecent) ? metadata.ixcEventsRecent : [];
+    let filtrada = lista;
+    if (filters?.type) filtrada = filtrada.filter((e: any) => e.type === filters.type);
+    if (filters?.status) filtrada = filtrada.filter((e: any) => e.status === filters.status);
+    results = filtrada.slice(0, limit) as any;
+    console.log(`[DB] Eventos retornados do metadata: ${results.length}`);
+  }
+
+  return results;
+}
+
+export async function initAuxTables() {
+  await ensureIxcEventsTable();
+  await ensureContactStatusEventsTable();
+}
+
+/**
+ * Contact Status Events helpers (SLA por card)
+ */
+async function ensureContactStatusEventsTable() {
+  const db = await getDb();
+  if (!db) return;
+  const runner = (db as any).run ?? (db as any).execute;
+  if (!runner) {
+    console.warn("[DB] ensureContactStatusEventsTable: no runner available");
+    return;
+  }
+  try {
+    await runner(sql`
+      CREATE TABLE IF NOT EXISTS contact_status_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspaceId INTEGER NOT NULL,
+        contactId INTEGER NOT NULL,
+        statusFrom TEXT NOT NULL,
+        statusTo TEXT NOT NULL,
+        assignedToId INTEGER,
+        changedAt INTEGER DEFAULT (strftime('%s', 'now'))
+      )
+    `);
+  } catch (err) {
+    console.error("[DB] ensureContactStatusEventsTable failed:", err);
+  }
+}
+
+export async function createContactStatusEvent(event: Omit<InsertContactStatusEvent, "id" | "changedAt">) {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await ensureContactStatusEventsTable();
+    await db.insert(contactStatusEvents).values(event);
+  } catch (error) {
+    console.error("[DB] Erro ao gravar contact_status_event:", error);
+  }
+}
+
+export async function getContactStatusEvents(
+  workspaceId: number,
+  filters?: {
+    contactId?: number;
+    from?: number; // timestamp (s)
+    to?: number;   // timestamp (s)
+  }
+): Promise<ContactStatusEvent[]> {
+  const db = await getDb();
+  if (!db) return [];
+  await ensureContactStatusEventsTable();
+
+  let conditions: any[] = [eq(contactStatusEvents.workspaceId, workspaceId)];
+  if (filters?.contactId) conditions.push(eq(contactStatusEvents.contactId, filters.contactId));
+  if (filters?.from) conditions.push(sql`${contactStatusEvents.changedAt} >= ${filters.from}`);
+  if (filters?.to) conditions.push(sql`${contactStatusEvents.changedAt} <= ${filters.to}`);
+
+  const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
+
+  return db
+    .select()
+    .from(contactStatusEvents)
+    .where(whereClause)
+    .orderBy(desc(contactStatusEvents.changedAt));
+}
+
+export async function getContactSla(
+  workspaceId: number,
+  contactId: number,
+  from?: number,
+  to?: number
+): Promise<{
+  perStatus: Array<{ status: string; totalSeconds: number; transitions: number; averageSeconds: number }>;
+  perAttendant: Array<{ attendantId: number | null; totalSeconds: number; transitions: number; averageSeconds: number }>;
+  totalEvents: number;
+}> {
+  const db = await getDb();
+  if (!db) return { perStatus: [], perAttendant: [], totalEvents: 0 };
+  await ensureContactStatusEventsTable();
+
+  const conditions: any[] = [
+    eq(contactStatusEvents.workspaceId, workspaceId),
+    eq(contactStatusEvents.contactId, contactId),
+  ];
+  if (from) conditions.push(sql`${contactStatusEvents.changedAt} >= ${from}`);
+  if (to) conditions.push(sql`${contactStatusEvents.changedAt} <= ${to}`);
+
+  const events = await db
+    .select()
+    .from(contactStatusEvents)
+    .where(and(...conditions))
+    .orderBy(contactStatusEvents.changedAt);
+
+  const now = Math.floor(Date.now() / 1000);
+  const windowStart = from ?? 0;
+  const windowEnd = to ?? now;
+
+  if (!events.length) {
+    return { perStatus: [], perAttendant: [], totalEvents: 0 };
+  }
+
+  const perStatus: Record<string, { totalSeconds: number; transitions: number }> = {};
+  const perAttendant: Record<string, { totalSeconds: number; transitions: number }> = {};
+
+  const addDuration = (status: string, assigned: number | null, start: number, end: number) => {
+    const a = Math.max(start, windowStart);
+    const b = Math.min(end, windowEnd);
+    if (b <= a) return;
+    const duration = b - a;
+    const keyStatus = status;
+    perStatus[keyStatus] = perStatus[keyStatus] || { totalSeconds: 0, transitions: 0 };
+    perStatus[keyStatus].totalSeconds += duration;
+    perStatus[keyStatus].transitions += 1;
+
+    const keyAtt = assigned !== null && assigned !== undefined ? String(assigned) : "sem_atendente";
+    perAttendant[keyAtt] = perAttendant[keyAtt] || { totalSeconds: 0, transitions: 0 };
+    perAttendant[keyAtt].totalSeconds += duration;
+    perAttendant[keyAtt].transitions += 1;
+  };
+
+  let lastStatus = events[0].statusFrom || events[0].statusTo || "desconhecido";
+  let lastAssigned = events[0].assignedToId ?? null;
+  let lastTime = events[0].changedAt;
+
+  for (const ev of events) {
+    addDuration(lastStatus, lastAssigned, lastTime, ev.changedAt);
+    lastStatus = ev.statusTo;
+    lastAssigned = ev.assignedToId ?? null;
+    lastTime = ev.changedAt;
+  }
+
+  addDuration(lastStatus, lastAssigned, lastTime, windowEnd);
+
+  const perStatusArr = Object.entries(perStatus).map(([status, v]) => ({
+    status,
+    totalSeconds: v.totalSeconds,
+    transitions: v.transitions,
+    averageSeconds: v.transitions > 0 ? v.totalSeconds / v.transitions : 0,
+  }));
+
+  const perAttendantArr = Object.entries(perAttendant).map(([att, v]) => ({
+    attendantId: att === "sem_atendente" ? null : Number(att),
+    totalSeconds: v.totalSeconds,
+    transitions: v.transitions,
+    averageSeconds: v.transitions > 0 ? v.totalSeconds / v.transitions : 0,
+  }));
+
+  return {
+    perStatus: perStatusArr,
+    perAttendant: perAttendantArr,
+    totalEvents: events.length,
+  };
 }
 
 export async function updateWorkspace(id: number, data: { name?: string; metadata?: any }) {
@@ -360,9 +673,23 @@ export async function updateContactKanbanStatus(id: number, status: string) {
   if (!db) throw new Error("Database not available");
   
   try {
-  await db.update(contacts)
-    .set({ kanbanStatus: status === "negociating" ? "negotiating" : status, updatedAt: new Date() })
-    .where(eq(contacts.id, id));
+    const existing = await db.select().from(contacts).where(eq(contacts.id, id)).limit(1);
+    if (!existing.length) return;
+    const contact = existing[0];
+    const statusFrom = contact.kanbanStatus || "new_contact";
+    const statusTo = status === "negociating" ? "negotiating" : status;
+
+    await db.update(contacts)
+      .set({ kanbanStatus: statusTo, updatedAt: new Date() })
+      .where(eq(contacts.id, id));
+
+    await createContactStatusEvent({
+      workspaceId: contact.workspaceId,
+      contactId: contact.id,
+      statusFrom,
+      statusTo,
+      assignedToId: contact.assignedToId ?? undefined,
+    });
   } catch (error: any) {
     console.error(`[DB] Error updating contact ${id} kanban status:`, error);
     if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {

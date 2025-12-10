@@ -202,6 +202,40 @@ export type CampaignAudienceMember = typeof campaignAudienceMembers.$inferSelect
 export type InsertCampaignAudienceMember = typeof campaignAudienceMembers.$inferInsert;
 
 /**
+ * Eventos IXC (consultas, boletos, desbloqueios)
+ */
+export const ixcEvents = sqliteTable("ixc_events", {
+  id: int("id").primaryKey(),
+  workspaceId: int("workspaceId").notNull(),
+  contactId: int("contactId"),
+  conversationId: int("conversationId"),
+  type: text("type").notNull(), // consulta | boleto | desbloqueio
+  status: text("status").notNull(), // success | fail
+  invoiceId: int("invoiceId"),
+  message: text("message"),
+  createdAt: int("createdAt", { mode: "timestamp" }).default(sql`(strftime('%s', 'now'))`).notNull(),
+});
+
+export type IxcEvent = typeof ixcEvents.$inferSelect;
+export type InsertIxcEvent = typeof ixcEvents.$inferInsert;
+
+/**
+ * Eventos de status do contato (para SLA de permanência em cada card)
+ */
+export const contactStatusEvents = sqliteTable("contact_status_events", {
+  id: int("id").primaryKey(),
+  workspaceId: int("workspaceId").notNull(),
+  contactId: int("contactId").notNull(),
+  statusFrom: text("statusFrom").notNull(),
+  statusTo: text("statusTo").notNull(),
+  assignedToId: int("assignedToId"),
+  changedAt: int("changedAt", { mode: "timestamp" }).default(sql`(strftime('%s', 'now'))`).notNull(),
+});
+
+export type ContactStatusEvent = typeof contactStatusEvents.$inferSelect;
+export type InsertContactStatusEvent = typeof contactStatusEvents.$inferInsert;
+
+/**
  * Uploads de catálogo de produtos
  */
 export const productUploads = sqliteTable("product_uploads", {

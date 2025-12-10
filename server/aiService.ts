@@ -819,42 +819,28 @@ export async function processIncomingMessage(
         );
       }
 
-      if (resolvedMediaUrl) {
-        const analysis = await analyzeImageForProductHints(resolvedMediaUrl);
-        console.log("[AI Service] Resultado da visão:", analysis);
-        const descriptions: string[] = [];
-        if (analysis.description) {
-          descriptions.push(analysis.description);
-        }
-        if (Array.isArray(analysis.keywords) && analysis.keywords.length > 0) {
-          const expandedHints = new Set<string>();
-          for (const keyword of analysis.keywords) {
-            const trimmed = keyword.trim();
-            if (!trimmed) continue;
-            expandedHints.add(trimmed);
-            const parts = trimmed.split(/[\s,;\/+\-]+/);
-            for (const part of parts) {
-              const piece = part.trim();
-              if (piece.length >= 2) {
-                expandedHints.add(piece);
-              }
-            }
-          }
-          const hintList = Array.from(expandedHints);
-          descriptions.push(
-            `Palavras-chave identificadas: ${hintList.join(", ")}`
-          );
-          imageKeywordHints = hintList;
-          console.log("[AI Service] Palavras-chave finais para busca via imagem:", imageKeywordHints);
-        }
-        if (descriptions.length > 0) {
-          const originalText = messageContent?.trim();
-          const interpretedQuestion =
-            originalText && originalText !== "[Imagem]"
-              ? originalText
-              : "O cliente quer saber se temos esse produto (ou alternativas semelhantes) disponível no catálogo.";
-          processedContent = [...descriptions, interpretedQuestion].join(". ");
-        }
+      // Desabilitar visão de produto para imagens: tratar como mensagem genérica
+      const originalText = messageContent?.trim();
+      // Não acrescentar texto se não houver legenda; usar apenas a legenda se existir
+      processedContent =
+        originalText && originalText !== "[Imagem]"
+          ? originalText
+          : "";
+      imageKeywordHints = [];
+    } else if (mediaType === "video") {
+      if (mediaBase64) {
+        const mimeType =
+          mediaMimeType && mediaMimeType.trim().length > 0
+            ? mediaMimeType
+            : "video/mp4";
+        resolvedMediaUrl = `data:${mimeType};base64,${mediaBase64}`;
+        console.log(
+          `[AI Service] Video received via base64 (mime: ${mimeType}, length: ${mediaBase64.length}).`
+        );
+      } else if (!resolvedMediaUrl) {
+        console.warn(
+          `[AI Service] Video received sem base64 ou URL acessível para o contato ${contactId}.`
+        );
       }
     }
     
@@ -990,12 +976,12 @@ export async function processIncomingMessage(
           senderType: "bot",
           content: botResponse,
         });
-
+        
         try {
           const { sendTextMessage, sendPDFDocument } = await import("./whatsappService");
           const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
           const instance = instances.find(i => i.id === instanceId);
-
+          
           if (instance && instance.instanceKey) {
             // Enviar mensagem de texto
             await sendTextMessage(instance.instanceKey, destinationNumber, botResponse);
@@ -1014,8 +1000,21 @@ export async function processIncomingMessage(
                     `Fatura ${boleto.idFatura}`
                   );
                   console.log(`[AI Service] ✅ Boleto ${boleto.idFatura} enviado`);
+                  // Registrar no histórico para o atendente ver que foi enviado
+                  await db.createMessage({
+                    conversationId: activeConv.id,
+                    senderType: "bot",
+                    content: `Boleto enviado: ${boleto.nomeArquivo}`,
+                    messageType: "document",
+                  });
                 } catch (error) {
                   console.error(`[AI Service] ❌ Erro ao enviar boleto ${boleto.idFatura}:`, error);
+                  await db.createMessage({
+                    conversationId: activeConv.id,
+                    senderType: "bot",
+                    content: `Erro ao enviar boleto ${boleto.nomeArquivo}: ${(error as any)?.message || "Falha desconhecida"}`,
+                    messageType: "text",
+                  });
                 }
               }
             }
@@ -1107,16 +1106,16 @@ export async function processIncomingMessage(
         // Intenção muito clara E já tem documento - processar diretamente
         deveProcessarIXCDireto = true;
         console.log(`[AI Service] Intenção muito clara (${intencaoIXC.confianca}) com documento. Processando IXC diretamente.`);
-      }
+        }
 
       if (deveProcessarIXCDireto && temConfiguracaoIXC && (intencaoIXC.tipo === "consulta_fatura" || intencaoIXC.tipo === "desbloqueio")) {
         // Processar diretamente com IXC
         if (intencaoIXC.tipo === "consulta_fatura") {
           console.log(`[AI Service] Processando consulta de fatura com IXC (documento: ${intencaoIXC.documento})`);
-          botResponse = await processarConsultaFatura(workspaceId, whatsappNumber, intencaoIXC.documento);
+        botResponse = await processarConsultaFatura(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id);
         } else if (intencaoIXC.tipo === "desbloqueio") {
           console.log(`[AI Service] Processando desbloqueio com IXC (documento: ${intencaoIXC.documento})`);
-          botResponse = await processarDesbloqueio(workspaceId, whatsappNumber, intencaoIXC.documento);
+        botResponse = await processarDesbloqueio(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id);
         }
       } else {
         // REATIVAR IA: Se não processou com IXC, deixar IA responder
