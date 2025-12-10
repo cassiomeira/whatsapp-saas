@@ -246,15 +246,13 @@ export async function getWorkspaceIxcMetrics(workspaceId: number) {
  * IXC Events helpers (consultas, boletos, desbloqueios)
  */
 async function ensureIxcEventsTable() {
-  const db = await getDb();
-  if (!db) return;
-  const runner = (db as any).run ?? (db as any).execute;
-  if (!runner) {
-    console.warn("[DB] ensureIxcEventsTable: no runner available");
+  if (!process.env.DATABASE_URL) {
+    console.warn("[DB] ensureIxcEventsTable: DATABASE_URL não definido");
     return;
   }
+  const client = createClient({ url: process.env.DATABASE_URL });
   try {
-    await runner(sql`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS ixc_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workspaceId INTEGER NOT NULL,
@@ -269,6 +267,10 @@ async function ensureIxcEventsTable() {
     `);
   } catch (err) {
     console.error("[DB] ensureIxcEventsTable failed:", err);
+  } finally {
+    try {
+      await (client as any)?.close?.();
+    } catch {}
   }
 }
 
@@ -361,21 +363,58 @@ export async function getIxcEvents(
 export async function initAuxTables() {
   await ensureIxcEventsTable();
   await ensureContactStatusEventsTable();
+  await ensureMessagesWhatsappIdColumn();
+}
+
+/**
+ * Garantir que a coluna whatsappMessageId existe na tabela messages
+ */
+async function ensureMessagesWhatsappIdColumn() {
+  if (!process.env.DATABASE_URL) {
+    console.warn("[DB] ensureMessagesWhatsappIdColumn: DATABASE_URL não definido");
+    return;
+  }
+  const client = createClient({ url: process.env.DATABASE_URL });
+  try {
+    // Verificar se a coluna já existe
+    const check = await client.execute(
+      "SELECT name FROM pragma_table_info('messages') WHERE name = 'whatsappMessageId';"
+    );
+    if (check && Array.isArray((check as any).rows) && (check as any).rows.length > 0) {
+      console.log("[DB] Coluna whatsappMessageId já existe na tabela messages");
+      return;
+    }
+
+    // Tentar adicionar a coluna
+    await client.execute("ALTER TABLE messages ADD COLUMN whatsappMessageId TEXT;");
+    console.log("[DB] Coluna whatsappMessageId adicionada com sucesso na tabela messages");
+  } catch (err: any) {
+    const errorMsg = err?.message?.toLowerCase() || "";
+    if (errorMsg.includes("duplicate column") || errorMsg.includes("already exists")) {
+      console.log("[DB] Coluna whatsappMessageId já existe na tabela messages (isso é OK)");
+    } else if (errorMsg.includes("no such table: messages")) {
+      console.error("[DB] Tabela messages não encontrada - verifique a base de dados");
+    } else {
+      console.error("[DB] ensureMessagesWhatsappIdColumn failed:", err);
+    }
+  } finally {
+    try {
+      await (client as any)?.close?.();
+    } catch {}
+  }
 }
 
 /**
  * Contact Status Events helpers (SLA por card)
  */
 async function ensureContactStatusEventsTable() {
-  const db = await getDb();
-  if (!db) return;
-  const runner = (db as any).run ?? (db as any).execute;
-  if (!runner) {
-    console.warn("[DB] ensureContactStatusEventsTable: no runner available");
+  if (!process.env.DATABASE_URL) {
+    console.warn("[DB] ensureContactStatusEventsTable: DATABASE_URL não definido");
     return;
   }
+  const client = createClient({ url: process.env.DATABASE_URL });
   try {
-    await runner(sql`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS contact_status_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workspaceId INTEGER NOT NULL,
@@ -388,6 +427,10 @@ async function ensureContactStatusEventsTable() {
     `);
   } catch (err) {
     console.error("[DB] ensureContactStatusEventsTable failed:", err);
+  } finally {
+    try {
+      await (client as any)?.close?.();
+    } catch {}
   }
 }
 
@@ -889,6 +932,35 @@ export async function getMessagesByConversation(conversationId: number) {
   return db.select().from(messages)
     .where(eq(messages.conversationId, conversationId))
     .orderBy(messages.sentAt);
+}
+
+export async function getMessageById(messageId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  
+  const result = await db.select().from(messages)
+    .where(eq(messages.id, messageId))
+    .limit(1);
+  
+  return result[0];
+}
+
+export async function updateMessageWhatsappId(messageId: number, whatsappMessageId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.update(messages)
+    .set({ whatsappMessageId })
+    .where(eq(messages.id, messageId));
+}
+
+export async function updateMessageContent(messageId: number, content: string, messageType: string = "text", mediaUrl: string | null = null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.update(messages)
+    .set({ content, messageType, mediaUrl })
+    .where(eq(messages.id, messageId));
 }
 
 // Bot Config functions

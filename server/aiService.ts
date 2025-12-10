@@ -860,13 +860,40 @@ export async function processIncomingMessage(
     let contactInNegotiating = contactStatus === "negotiating";
 
     // Salvar mensagem do contato ANTES de processar (garante histórico completo)
-    await db.createMessage({
-      conversationId: activeConv.id,
-      senderType: "contact",
-      content: processedContent,
-      messageType: mediaType || "text",
-      mediaUrl: resolvedMediaUrl,
-    });
+    try {
+      await db.createMessage({
+        conversationId: activeConv.id,
+        senderType: "contact",
+        content: processedContent,
+        messageType: mediaType || "text",
+        mediaUrl: resolvedMediaUrl,
+      });
+      console.log(`[AI Service] Mensagem do contato salva com sucesso`);
+    } catch (error: any) {
+      console.error(`[AI Service] Erro ao salvar mensagem do contato:`, error);
+      // Se o erro for relacionado à coluna whatsappMessageId, tentar garantir que ela existe
+      if (error?.message?.includes("whatsappMessageId")) {
+        console.log(`[AI Service] Erro relacionado a whatsappMessageId, tentando garantir coluna...`);
+        try {
+          const { initAuxTables } = await import("./db");
+          await initAuxTables();
+          // Tentar salvar novamente
+          await db.createMessage({
+            conversationId: activeConv.id,
+            senderType: "contact",
+            content: processedContent,
+            messageType: mediaType || "text",
+            mediaUrl: resolvedMediaUrl,
+          });
+          console.log(`[AI Service] Mensagem do contato salva após garantir coluna`);
+        } catch (retryError) {
+          console.error(`[AI Service] Erro ao salvar mensagem mesmo após garantir coluna:`, retryError);
+          throw retryError;
+        }
+      } else {
+        throw error;
+      }
+    }
 
     // Se o contato está aguardando atendente, IA não responde
     // Mas se estiver em "negotiating", a IA CONTINUA respondendo com aviso

@@ -105,6 +105,7 @@ export const messages = sqliteTable("messages", {
   mediaUrl: text("mediaUrl"),
   sentAt: int("sentAt", { mode: "timestamp" }).default(sql`(strftime('%s', 'now'))`).notNull(),
   isRead: int("isRead", { mode: "boolean" }).default(sql`0`).notNull(),
+  whatsappMessageId: text("whatsappMessageId"),
 });
 
 export type Message = typeof messages.$inferSelect;

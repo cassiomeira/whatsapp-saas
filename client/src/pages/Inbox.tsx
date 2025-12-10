@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { trpc } from "@/lib/trpc";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { toast } from "sonner";
-import { Send, Bot, User as UserIcon, Phone, Clock } from "lucide-react";
+import { Send, Bot, User as UserIcon, Phone, Clock, Trash2 } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function Inbox() {
@@ -322,7 +322,7 @@ export default function Inbox() {
                             className={`flex ${isAgent || isBot ? "justify-end" : "justify-start"}`}
                           >
                             <div
-                              className={`max-w-[70%] rounded-lg p-3 ${
+                              className={`max-w-[70%] rounded-lg p-3 group relative ${
                                 isAgent
                                   ? "bg-primary text-primary-foreground"
                                   : isBot
@@ -330,17 +330,32 @@ export default function Inbox() {
                                   : "bg-muted"
                               }`}
                             >
-                              <div className="flex items-center gap-2 mb-1">
-                                {isBot ? (
-                                  <Bot className="w-4 h-4" />
-                                ) : isAgent ? (
-                                  <UserIcon className="w-4 h-4" />
-                                ) : (
-                                  <Phone className="w-4 h-4" />
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2">
+                                  {isBot ? (
+                                    <Bot className="w-4 h-4" />
+                                  ) : isAgent ? (
+                                    <UserIcon className="w-4 h-4" />
+                                  ) : (
+                                    <Phone className="w-4 h-4" />
+                                  )}
+                                  <span className="text-xs font-medium">
+                                    {isBot ? "Bot" : isAgent ? "Você" : "Cliente"}
+                                  </span>
+                                </div>
+                                {isAgent && (
+                                  <button
+                                    onClick={() => {
+                                      if (confirm("Tem certeza que deseja apagar esta mensagem para todos?")) {
+                                        deleteMessageMutation.mutate({ messageId: msg.id });
+                                      }
+                                    }}
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-primary/20 rounded"
+                                    title="Apagar mensagem"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
                                 )}
-                                <span className="text-xs font-medium">
-                                  {isBot ? "Bot" : isAgent ? "Você" : "Cliente"}
-                                </span>
                               </div>
                               {/* Mídia */}
                               {msg.mediaUrl && msg.messageType === "image" && (

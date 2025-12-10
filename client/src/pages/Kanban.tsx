@@ -694,6 +694,15 @@ function ChatPanel({ contactId }: { contactId: number }) {
   );
   const sendMessage = trpc.messages.send.useMutation();
   const uploadMedia = trpc.messages.uploadMedia.useMutation();
+  const deleteMessageMutation = trpc.messages.deleteForEveryone.useMutation({
+    onSuccess: () => {
+      refetch();
+      toast.success("Mensagem apagada");
+    },
+    onError: (error) => {
+      toast.error(error.message || "Erro ao apagar mensagem");
+    },
+  });
 
   // Verificar se o usuário está no final do scroll
   const checkIfAtBottom = () => {
@@ -1160,12 +1169,25 @@ function ChatPanel({ contactId }: { contactId: number }) {
                 }`}
               >
                 <div
-                  className={`max-w-[80%] rounded-lg p-3 ${
+                  className={`max-w-[80%] rounded-lg p-3 group relative ${
                     msg.senderType === "contact"
                       ? "bg-muted"
                       : "bg-primary text-primary-foreground"
                   }`}
                 >
+                  {msg.senderType === "agent" && (
+                    <button
+                      onClick={() => {
+                        if (confirm("Tem certeza que deseja apagar esta mensagem para todos?")) {
+                          deleteMessageMutation.mutate({ messageId: msg.id });
+                        }
+                      }}
+                      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-primary/20 rounded"
+                      title="Apagar mensagem"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
                   {/* Exibir mídia se houver */}
                   {msg.mediaUrl && msg.messageType === "image" && (
                     <div className="mb-2 space-y-1">

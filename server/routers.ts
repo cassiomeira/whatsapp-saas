@@ -812,8 +812,8 @@ export const appRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "Message content or media is required" });
         }
 
-        // Salvar mensagem no banco
-        const messageId = await db.createMessage({
+        // Salvar mensagem no banco (sem whatsappMessageId ainda, será atualizado após envio)
+        let messageId = await db.createMessage({
           conversationId: input.conversationId,
           senderType: "agent",
           senderId: ctx.user.id,
@@ -882,6 +882,8 @@ export const appRouter = router({
               try {
                 const { sendTextMessage, sendMediaMessage } = await import("./whatsappService");
                 
+                let whatsappMessageId: string | null = null;
+                
                 if (input.mediaUrl && input.mediaType) {
                   console.log(`[Messages] Attempting to send media from app:`, {
                     instanceKey: instance.instanceKey,
@@ -890,7 +892,7 @@ export const appRouter = router({
                     mediaUrl: input.mediaUrl,
                   });
                   
-                  await sendMediaMessage(
+                  whatsappMessageId = await sendMediaMessage(
                     instance.instanceKey,
                     contact.whatsappNumber,
                     input.mediaUrl,
@@ -898,7 +900,7 @@ export const appRouter = router({
                     input.caption || input.content
                   );
                   
-                  console.log(`[Messages] Mídia do atendente enviada com sucesso para ${contact.whatsappNumber}`);
+                  console.log(`[Messages] Mídia do atendente enviada com sucesso para ${contact.whatsappNumber}, messageId: ${whatsappMessageId}`);
                 } else if (input.content) {
                   console.log(`[Messages] Attempting to send message from app:`, {
                     instanceKey: instance.instanceKey,
@@ -906,13 +908,18 @@ export const appRouter = router({
                     content: input.content.substring(0, 50),
                   });
                   
-                  await sendTextMessage(
+                  whatsappMessageId = await sendTextMessage(
                     instance.instanceKey,
                     contact.whatsappNumber,
                     input.content
                   );
                   
-                  console.log(`[Messages] Mensagem do atendente enviada com sucesso para ${contact.whatsappNumber}`);
+                  console.log(`[Messages] Mensagem do atendente enviada com sucesso para ${contact.whatsappNumber}, messageId: ${whatsappMessageId}`);
+                }
+                
+                // Atualizar mensagem com whatsappMessageId
+                if (whatsappMessageId && messageId) {
+                  await db.updateMessageWhatsappId(messageId, whatsappMessageId);
                 }
                 } catch (error: any) {
                 console.error(`[Messages] Erro ao enviar mensagem/mídia via WhatsApp:`, error);
@@ -959,6 +966,92 @@ export const appRouter = router({
         }
 
         return { messageId };
+      }),
+
+    // Deletar mensagem para todos (apenas mensagens do atendente, dentro de 1 hora)
+    deleteForEveryone: protectedProcedure
+      .input(z.object({
+        messageId: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user?.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        const message = await db.getMessageById(input.messageId);
+        if (!message) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Message not found" });
+        }
+
+        // Verificar se a mensagem é do atendente e se é do usuário atual
+        if (message.senderType !== "agent" || message.senderId !== ctx.user.id) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You can only delete your own agent messages" });
+        }
+
+        // Verificar se a mensagem tem menos de 1 hora
+        const oneHourAgo = Math.floor(Date.now() / 1000) - 3600; // 1 hora em segundos
+        const messageTimestamp = message.sentAt.getTime() / 1000;
+        if (messageTimestamp < oneHourAgo) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Cannot delete messages older than 1 hour" });
+        }
+
+        // Verificar se tem whatsappMessageId
+        if (!message.whatsappMessageId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "WhatsApp message ID not found for this message" });
+        }
+
+        // Buscar conversa para pegar a instância
+        const conversations = await db.getConversationsByWorkspace(ctx.user.workspaceId);
+        const conversation = conversations.find(c => c.id === message.conversationId);
+        if (!conversation || !conversation.instanceId) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Conversation or instance not found" });
+        }
+
+        const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
+        const instance = instances.find(i => i.id === conversation.instanceId);
+        if (!instance || !instance.instanceKey) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "WhatsApp instance not found or not connected" });
+        }
+
+        // Deletar no WhatsApp
+        try {
+          const { getWhatsAppClient } = await import("./whatsappService");
+          const client = getWhatsAppClient(instance.instanceKey);
+          if (!client) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "WhatsApp client not ready" });
+          }
+
+          const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId);
+          const contact = contacts.find(c => c.id === conversation.contactId);
+          if (!contact) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Contact not found" });
+          }
+
+          // Obter a mensagem direto pelo ID serializado
+          const msg = await client.getMessageById(message.whatsappMessageId);
+          
+          if (msg) {
+            await msg.delete(true); // true para deleteForEveryone
+            console.log(`[Messages] Message ${message.id} deleted for everyone on WhatsApp.`);
+          } else {
+            console.warn(`[Messages] WhatsApp message ${message.whatsappMessageId} not found for deletion.`);
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Mensagem não encontrada no WhatsApp para apagar",
+            });
+          }
+        } catch (error: any) {
+          console.error("[Messages] Error deleting message on WhatsApp:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Failed to delete message on WhatsApp: ${error.message || "Unknown error"}`,
+          });
+        }
+
+        // Atualizar mensagem no banco para refletir a exclusão
+        await db.updateMessageContent(input.messageId, "Mensagem apagada", "text", null);
+
+        return { success: true };
       }),
   }),
 

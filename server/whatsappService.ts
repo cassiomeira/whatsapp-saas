@@ -132,6 +132,10 @@ function cleanupChromiumLocks(instanceKey: string) {
 // Armazenar clientes ativos
 const activeClients = new Map<string, WhatsAppClient>();
 
+export function getWhatsAppClient(instanceKey: string): WhatsAppClient | undefined {
+  return activeClients.get(instanceKey);
+}
+
 export interface CreateInstanceResponse {
   instance: {
     instanceName: string;
@@ -766,7 +770,7 @@ export async function getInstanceStatus(instanceKey: string): Promise<InstanceSt
 /**
  * Enviar mensagem de texto
  */
-export async function sendTextMessage(instanceKey: string, number: string, text: string): Promise<void> {
+export async function sendTextMessage(instanceKey: string, number: string, text: string): Promise<string | null> {
   let client = activeClients.get(instanceKey);
   
   // Se o cliente não estiver no Map, tentar recriar a partir do banco
@@ -850,8 +854,10 @@ export async function sendTextMessage(instanceKey: string, number: string, text:
     const formattedNumber = number.includes("@") ? number : `${number}@s.whatsapp.net`;
     
     console.log(`[WhatsApp] Sending message from ${instanceKey} to ${formattedNumber}: ${text.substring(0, 50)}...`);
-    await client.sendMessage(formattedNumber, text);
-    console.log(`[WhatsApp] Message sent successfully from ${instanceKey} to ${formattedNumber}`);
+    const sentMessage = await client.sendMessage(formattedNumber, text);
+    const whatsappMessageId = (sentMessage as any).id?._serialized || (sentMessage as any).id?.id || null;
+    console.log(`[WhatsApp] Message sent successfully from ${instanceKey} to ${formattedNumber}, messageId: ${whatsappMessageId}`);
+    return whatsappMessageId;
   } catch (error: any) {
     console.error(`[WhatsApp] Error sending message from ${instanceKey} to ${number}:`, error);
     throw new Error(`Failed to send message: ${error.message}`);
@@ -867,7 +873,7 @@ export async function sendMediaMessage(
   mediaUrl: string,
   mediaType: "image" | "audio" | "video" | "document",
   caption?: string
-): Promise<void> {
+): Promise<string | null> {
   let client = activeClients.get(instanceKey);
   
   // Se o cliente não estiver no Map, tentar recriar a partir do banco
@@ -1052,16 +1058,21 @@ export async function sendMediaMessage(
       hasCaption: !!sendOptions.caption
     });
     
+    let sentMessage: any = null;
     try {
-      await client.sendMessage(formattedNumber, media, sendOptions);
-      console.log(`[WhatsApp] Media sent successfully from ${instanceKey} to ${formattedNumber}`);
+      sentMessage = await client.sendMessage(formattedNumber, media, sendOptions);
+      const whatsappMessageId = (sentMessage as any)?.id?._serialized || (sentMessage as any)?.id?.id || null;
+      console.log(`[WhatsApp] Media sent successfully from ${instanceKey} to ${formattedNumber}, messageId: ${whatsappMessageId}`);
+      return whatsappMessageId;
     } catch (sendError: any) {
       // Se falhar, tentar sem opções
       if (sendOptions.caption) {
         console.warn(`[WhatsApp] Failed to send with caption, trying without caption:`, sendError.message);
         try {
-          await client.sendMessage(formattedNumber, media);
-          console.log(`[WhatsApp] Media sent successfully (without caption) from ${instanceKey} to ${formattedNumber}`);
+          sentMessage = await client.sendMessage(formattedNumber, media);
+          const whatsappMessageId = (sentMessage as any)?.id?._serialized || (sentMessage as any)?.id?.id || null;
+          console.log(`[WhatsApp] Media sent successfully (without caption) from ${instanceKey} to ${formattedNumber}, messageId: ${whatsappMessageId}`);
+          return whatsappMessageId;
         } catch (retryError: any) {
           // Se ainda falhar, tentar sem filename
           console.warn(`[WhatsApp] Failed without caption, trying without filename:`, retryError.message);
@@ -1070,8 +1081,10 @@ export async function sendMediaMessage(
               mimetype: media.mimetype,
               data: media.data,
             };
-            await client.sendMessage(formattedNumber, mediaWithoutFilename);
-            console.log(`[WhatsApp] Media sent successfully (without filename) from ${instanceKey} to ${formattedNumber}`);
+            sentMessage = await client.sendMessage(formattedNumber, mediaWithoutFilename);
+            const whatsappMessageId = (sentMessage as any)?.id?._serialized || (sentMessage as any)?.id?.id || null;
+            console.log(`[WhatsApp] Media sent successfully (without filename) from ${instanceKey} to ${formattedNumber}, messageId: ${whatsappMessageId}`);
+            return whatsappMessageId;
           } catch (finalError: any) {
             // Log detalhado do erro para debug
             console.error(`[WhatsApp] Final error details:`, {
