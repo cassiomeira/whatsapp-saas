@@ -895,6 +895,56 @@ export async function processIncomingMessage(
       }
     }
 
+    // Comandos de colaborador em campo (#desativar / #ativar)
+    const collaboratorStatus = "collaborators_fixed";
+    const trimmedContent = processedContent?.trim().toLowerCase() || "";
+
+    // Se já está marcado como colaborador e não pediu para ativar, não responder IA
+    const isCollaborator = contact?.metadata && (contact.metadata as any).collaboratorMode === true;
+    if (trimmedContent === "#desativar") {
+      console.log(`[AI Service] Comando #desativar recebido. Marcando contato como colaborador e desativando IA.`);
+      await db.updateContactKanbanStatus(contactId, collaboratorStatus);
+      await db.updateContactMetadata(contactId, (metadata: any = {}) => ({
+        ...metadata,
+        collaboratorMode: true,
+      }));
+      try {
+        const { sendTextMessage } = await import("./whatsappService");
+        const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
+        const instance = instances.find(i => i.id === instanceId);
+        if (instance?.instanceKey) {
+          await sendTextMessage(instance.instanceKey, destinationNumber, "Modo colaborador ativado. A IA não vai responder até você enviar #ativar.");
+        }
+      } catch (err) {
+        console.error("[AI Service] Erro ao enviar confirmação de desativação:", err);
+      }
+      return;
+    }
+
+    if (trimmedContent === "#ativar") {
+      console.log(`[AI Service] Comando #ativar recebido. Reativando IA para o contato.`);
+      await db.updateContactKanbanStatus(contactId, "new_contact");
+      await db.updateContactMetadata(contactId, (metadata: any = {}) => {
+        const clone = { ...metadata };
+        delete clone.collaboratorMode;
+        return clone;
+      });
+      try {
+        const { sendTextMessage } = await import("./whatsappService");
+        const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
+        const instance = instances.find(i => i.id === instanceId);
+        if (instance?.instanceKey) {
+          await sendTextMessage(instance.instanceKey, destinationNumber, "IA reativada. Pode seguir falando comigo normalmente. 🙂");
+        }
+      } catch (err) {
+        console.error("[AI Service] Erro ao enviar confirmação de ativação:", err);
+      }
+      // Continua fluxo normal após reativar
+    } else if (isCollaborator) {
+      console.log(`[AI Service] Contato em modo colaborador. IA não irá responder até receber #ativar.`);
+      return;
+    }
+
     // Se o contato está aguardando atendente, IA não responde
     // Mas se estiver em "negotiating", a IA CONTINUA respondendo com aviso
     if (contactWaiting) {

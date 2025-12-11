@@ -60,6 +60,7 @@ const DEFAULT_COLUMNS: KanbanColumn[] = [
   { id: "new_contact", title: "Novo Contato", color: "bg-blue-500" },
   { id: "waiting_attendant", title: "Aguardando Atendente", color: "bg-orange-500" },
   { id: "negotiating", title: "Negociando", color: "bg-purple-500" },
+  { id: "collaborators_fixed", title: "COLABORADORES NETCAR NAO REMOVER DAQUI", color: "bg-emerald-600" },
 ];
 
 function ContactCard({ contact, onClick, onArchive }: { contact: Contact; onClick?: () => void; onArchive?: () => void }) {
