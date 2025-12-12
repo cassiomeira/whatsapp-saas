@@ -417,26 +417,54 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
           }
         }
 
-        // Extrair número do WhatsApp (formato: 5511999999999@s.whatsapp.net)
-        const whatsappNumber = message.from.split("@")[0];
-        console.log(`[WhatsApp] Message received from ${whatsappNumber}: ${message.body}`);
+        // Extrair número do WhatsApp com fallback usando getContact()
+        let resolvedContact: any = null;
+        try {
+          resolvedContact = await message.getContact();
+        } catch (err) {
+          console.warn(`[WhatsApp] Could not get contact info for message from ${message.from}:`, err);
+        }
 
-        // Buscar ou criar contato
-        let contacts = await db.getContactsByWorkspace(dbInstance.workspaceId);
-        let contact = contacts.find(c => c.whatsappNumber === whatsappNumber);
+        // Tentar obter número formatado (mais confiável para evitar IDs longos)
+        let formattedFromContact: string | undefined;
+        try {
+          if (resolvedContact?.getFormattedNumber) {
+            formattedFromContact = await resolvedContact.getFormattedNumber();
+          }
+        } catch (err) {
+          console.warn(`[WhatsApp] Could not get formatted number for ${message.from}:`, err);
+        }
+
+        const rawNumber =
+          formattedFromContact ||
+          resolvedContact?.number ||
+          (resolvedContact as any)?.id?.user ||
+          message.from.split("@")[0];
+
+        const whatsappNumber = db.normalizePhone(rawNumber);
+        console.log(
+          `[WhatsApp] Message received from raw ${rawNumber}, normalized ${whatsappNumber}: ${message.body}`
+        );
+
+        const contactName =
+          resolvedContact?.name ||
+          resolvedContact?.pushname ||
+          message.notifyName ||
+          message.pushName ||
+          whatsappNumber;
+
+        // Buscar ou criar contato (considerando normalização)
+        let contact = await db.getContactByNumber(dbInstance.workspaceId, whatsappNumber);
         
         if (!contact) {
           console.log(`[WhatsApp] Creating new contact for ${whatsappNumber}`);
-          const contactName = message.notifyName || message.pushName || whatsappNumber;
           const contactId = await db.createContact({
             workspaceId: dbInstance.workspaceId,
             whatsappNumber,
             name: contactName,
           });
           console.log(`[WhatsApp] Contact created with ID: ${contactId}`);
-          // Recarregar contatos
-          contacts = await db.getContactsByWorkspace(dbInstance.workspaceId);
-          contact = contacts.find(c => c.id === contactId);
+          contact = await db.getContactByNumber(dbInstance.workspaceId, whatsappNumber);
         } else {
           console.log(`[WhatsApp] Contact found: ${contact.id} - ${contact.name}`);
         }
@@ -850,8 +878,8 @@ export async function sendTextMessage(instanceKey: string, number: string, text:
       }
     }
 
-    // Formatar número (remover caracteres especiais, adicionar @s.whatsapp.net se necessário)
-    const formattedNumber = number.includes("@") ? number : `${number}@s.whatsapp.net`;
+    // Formatar número (remover caracteres especiais, adicionar @c.us se necessário)
+    const formattedNumber = number.includes("@") ? number : `${number}@c.us`;
     
     console.log(`[WhatsApp] Sending message from ${instanceKey} to ${formattedNumber}: ${text.substring(0, 50)}...`);
     const sentMessage = await client.sendMessage(formattedNumber, text);
@@ -926,7 +954,7 @@ export async function sendMediaMessage(
     }
 
     // Formatar número
-    const formattedNumber = number.includes("@") ? number : `${number}@s.whatsapp.net`;
+    const formattedNumber = number.includes("@") ? number : `${number}@c.us`;
     
     console.log(`[WhatsApp] Sending media from ${instanceKey} to ${formattedNumber}: ${mediaType} - ${mediaUrl}`);
     
@@ -1264,7 +1292,7 @@ export async function sendPDFDocument(
       throw new Error(`Client is not connected. Current state: ${state}`);
     }
 
-    const formattedNumber = number.includes("@") ? number : `${number}@s.whatsapp.net`;
+    const formattedNumber = number.includes("@") ? number : `${number}@c.us`;
     
     console.log(`[WhatsApp] Enviando PDF de ${instanceKey} para ${formattedNumber}: ${filename}`);
     
