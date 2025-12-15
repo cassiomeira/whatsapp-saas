@@ -597,12 +597,18 @@ export const appRouter = router({
         
         if (!contact) {
           // Criar novo contato
+          const destinationJid = `${normalizedNumber}@c.us`;
           const contactId = await db.createContact({
             workspaceId: ctx.user.workspaceId,
             whatsappNumber: normalizedNumber,
             name: input.name || null,
             kanbanStatus: "waiting_attendant", // Marcar como aguardando atendente para IA não interferir
-            metadata: { startedByAgent: true }, // Flag para indicar que foi iniciado pelo atendente
+            metadata: {
+              startedByAgent: true, // Flag para indicar que foi iniciado pelo atendente
+              whatsappJid: destinationJid,
+              displayNumber: normalizedNumber,
+              lastNormalized: normalizedNumber,
+            },
           });
           contact = await db.getContactByNumber(ctx.user.workspaceId, normalizedNumber);
         } else {
@@ -615,6 +621,9 @@ export const appRouter = router({
           await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
             ...metadata,
             startedByAgent: true,
+            whatsappJid: metadata.whatsappJid || `${normalizedNumber}@c.us`,
+            displayNumber: metadata.displayNumber || normalizedNumber,
+            lastNormalized: normalizedNumber,
           }));
         }
 
@@ -846,6 +855,10 @@ export const appRouter = router({
           } : "NOT FOUND");
           
           if (contact) {
+            const destinationNumber =
+              (contact.metadata as any)?.whatsappJid ||
+              contact.whatsappNumber;
+
             await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
               ...metadata,
               unread: false,
@@ -887,34 +900,34 @@ export const appRouter = router({
                 if (input.mediaUrl && input.mediaType) {
                   console.log(`[Messages] Attempting to send media from app:`, {
                     instanceKey: instance.instanceKey,
-                    whatsappNumber: contact.whatsappNumber,
+                    whatsappNumber: destinationNumber,
                     mediaType: input.mediaType,
                     mediaUrl: input.mediaUrl,
                   });
                   
                   whatsappMessageId = await sendMediaMessage(
                     instance.instanceKey,
-                    contact.whatsappNumber,
+                    destinationNumber,
                     input.mediaUrl,
                     input.mediaType,
                     input.caption || input.content
                   );
                   
-                  console.log(`[Messages] Mídia do atendente enviada com sucesso para ${contact.whatsappNumber}, messageId: ${whatsappMessageId}`);
+                  console.log(`[Messages] Mídia do atendente enviada com sucesso para ${destinationNumber}, messageId: ${whatsappMessageId}`);
                 } else if (input.content) {
                   console.log(`[Messages] Attempting to send message from app:`, {
                     instanceKey: instance.instanceKey,
-                    whatsappNumber: contact.whatsappNumber,
+                    whatsappNumber: destinationNumber,
                     content: input.content.substring(0, 50),
                   });
                   
                   whatsappMessageId = await sendTextMessage(
                     instance.instanceKey,
-                    contact.whatsappNumber,
+                    destinationNumber,
                     input.content
                   );
                   
-                  console.log(`[Messages] Mensagem do atendente enviada com sucesso para ${contact.whatsappNumber}, messageId: ${whatsappMessageId}`);
+                  console.log(`[Messages] Mensagem do atendente enviada com sucesso para ${destinationNumber}, messageId: ${whatsappMessageId}`);
                 }
                 
                 // Atualizar mensagem com whatsappMessageId

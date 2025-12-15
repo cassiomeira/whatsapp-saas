@@ -104,7 +104,7 @@ export default function Inbox() {
       // Pequeno delay para garantir que o DOM foi atualizado
       setTimeout(() => {
         if (!isUserScrollingRef.current) {
-          messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
         }
       }, 100);
     }
@@ -201,8 +201,8 @@ export default function Inbox() {
             </div>
             <div className="flex-1 min-h-0 overflow-hidden">
               <ScrollArea className="h-full">
-                <div className="p-2 space-y-2">
-                  {conversations && conversations.length > 0 ? (
+              <div className="p-2 space-y-2">
+                {conversations && conversations.length > 0 ? (
                     conversations.map((conv) => {
                       const contact = contacts?.find(c => c.id === conv.contactId);
                       const title = contact?.name || contact?.whatsappNumber || `Conversa #${conv.id}`;
@@ -212,43 +212,43 @@ export default function Inbox() {
                         ? `Contato ID: ${conv.contactId}`
                         : "Contato não identificado";
                       return (
-                        <Card
-                          key={conv.id}
-                          className={`p-3 cursor-pointer hover:bg-accent transition-colors ${
-                            selectedConversationId === conv.id ? "bg-accent" : ""
-                          }`}
-                          onClick={() => setSelectedConversationId(conv.id)}
-                        >
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                                <Phone className="w-5 h-5 text-primary" />
-                              </div>
-                              <div>
+                    <Card
+                      key={conv.id}
+                      className={`p-3 cursor-pointer hover:bg-accent transition-colors ${
+                        selectedConversationId === conv.id ? "bg-accent" : ""
+                      }`}
+                      onClick={() => setSelectedConversationId(conv.id)}
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                            <Phone className="w-5 h-5 text-primary" />
+                          </div>
+                          <div>
                                 <p className="font-medium text-sm">{title}</p>
                                 <p className="text-xs text-muted-foreground">{subtitle}</p>
-                              </div>
-                            </div>
                           </div>
-                          <div className="flex items-center justify-between">
-                            {getStatusBadge(conv.status)}
-                            {conv.lastMessageAt && (
-                              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                <Clock className="w-3 h-3" />
-                                {new Date(conv.lastMessageAt).toLocaleTimeString()}
-                              </span>
-                            )}
-                          </div>
-                        </Card>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        {getStatusBadge(conv.status)}
+                        {conv.lastMessageAt && (
+                          <span className="text-xs text-muted-foreground flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {new Date(conv.lastMessageAt).toLocaleTimeString()}
+                          </span>
+                        )}
+                      </div>
+                    </Card>
                       );
                     })
-                  ) : (
-                    <div className="text-center text-muted-foreground p-8">
-                      <p>Nenhuma conversa</p>
-                    </div>
-                  )}
-                </div>
-              </ScrollArea>
+                ) : (
+                  <div className="text-center text-muted-foreground p-8">
+                    <p>Nenhuma conversa</p>
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
             </div>
           </div>
 
@@ -332,17 +332,17 @@ export default function Inbox() {
                             >
                               <div className="flex items-center justify-between mb-1">
                                 <div className="flex items-center gap-2">
-                                  {isBot ? (
-                                    <Bot className="w-4 h-4" />
-                                  ) : isAgent ? (
-                                    <UserIcon className="w-4 h-4" />
-                                  ) : (
-                                    <Phone className="w-4 h-4" />
-                                  )}
-                                  <span className="text-xs font-medium">
-                                    {isBot ? "Bot" : isAgent ? "Você" : "Cliente"}
-                                  </span>
-                                </div>
+                                {isBot ? (
+                                  <Bot className="w-4 h-4" />
+                                ) : isAgent ? (
+                                  <UserIcon className="w-4 h-4" />
+                                ) : (
+                                  <Phone className="w-4 h-4" />
+                                )}
+                                <span className="text-xs font-medium">
+                                  {isBot ? "Bot" : isAgent ? "Você" : "Cliente"}
+                                </span>
+                              </div>
                                 {isAgent && (
                                   <button
                                     onClick={() => {
@@ -412,7 +412,7 @@ export default function Inbox() {
 
                               {/* Texto (se houver) */}
                               {msg.content && msg.content.trim().length > 0 && (
-                                <p className="text-sm">{msg.content}</p>
+                              <p className="text-sm">{msg.content}</p>
                               )}
                               <p className="text-xs opacity-70 mt-1">
                                 {new Date(msg.sentAt).toLocaleString()}

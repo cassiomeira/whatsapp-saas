@@ -848,10 +848,13 @@ export async function processIncomingMessage(
     // Mas primeiro buscar contato para verificar status
     const contacts = await db.getContactsByWorkspace(workspaceId);
     const contact = contacts.find(c => c.id === contactId);
-    // Número de destino: se o recebido estiver vazio, use o do contato
-    const destinationNumber = (contact?.whatsappNumber && contact.whatsappNumber.trim().length > 0)
-      ? contact.whatsappNumber
-      : whatsappNumber;
+    // Número/JID de destino: priorizar JID salvo no metadata (pode ser @lid)
+    const destinationNumber =
+      ((contact?.metadata as any)?.whatsappJid && String((contact?.metadata as any)?.whatsappJid).trim().length > 0)
+        ? (contact?.metadata as any)?.whatsappJid
+        : (contact?.whatsappNumber && contact.whatsappNumber.trim().length > 0)
+          ? contact.whatsappNumber
+          : whatsappNumber;
 
     // Verificar status do Kanban
     const contactStatus = contact?.kanbanStatus || "new_contact";

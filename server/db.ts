@@ -716,18 +716,30 @@ export async function getContactByNumber(workspaceId: number, whatsappNumber: st
   if (!db) return undefined;
 
   const normalized = normalizePhone(whatsappNumber);
-  
-  const result = await db.select().from(contacts)
-    .where(and(
-      eq(contacts.workspaceId, workspaceId),
-      or(
-        eq(contacts.whatsappNumber, normalized),
-        eq(contacts.whatsappNumber, `+${normalized}`),
-        eq(contacts.whatsappNumber, whatsappNumber)
+  const candidates = new Set<string>();
+
+  if (whatsappNumber) {
+    candidates.add(whatsappNumber);
+    // Se vier com domínio (@c.us / @lid), usar apenas a parte do usuário também
+    const userPart = whatsappNumber.split("@")[0];
+    if (userPart) candidates.add(userPart);
+  }
+  if (normalized) {
+    candidates.add(normalized);
+    candidates.add(`+${normalized}`);
+  }
+
+  const result = await db
+    .select()
+    .from(contacts)
+    .where(
+      and(
+        eq(contacts.workspaceId, workspaceId),
+        inArray(contacts.whatsappNumber, Array.from(candidates))
       )
-    ))
+    )
     .limit(1);
-  
+
   return result[0];
 }
 
@@ -811,6 +823,16 @@ export async function updateContactKanbanStatus(id: number, status: string) {
     }
     throw error;
   }
+}
+
+export async function updateContactWhatsappNumber(id: number, whatsappNumber: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db
+    .update(contacts)
+    .set({ whatsappNumber, updatedAt: new Date() })
+    .where(eq(contacts.id, id));
 }
 
 export async function updateContactName(id: number, name: string) {

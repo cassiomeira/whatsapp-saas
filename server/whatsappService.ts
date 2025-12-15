@@ -417,13 +417,17 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
           }
         }
 
-        // Extrair número do WhatsApp com fallback usando getContact()
+        // Extrair número/JID do WhatsApp com fallback usando getContact()
         let resolvedContact: any = null;
         try {
           resolvedContact = await message.getContact();
         } catch (err) {
           console.warn(`[WhatsApp] Could not get contact info for message from ${message.from}:`, err);
         }
+
+        // JID completo (pode ser @c.us ou @lid). Guardar sempre para reuso em envios.
+        const fullJid = (resolvedContact as any)?.id?._serialized || message.from;
+        const jidUser = fullJid.split("@")[0];
 
         // Tentar obter número formatado (mais confiável para evitar IDs longos)
         let formattedFromContact: string | undefined;
@@ -439,11 +443,20 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
           formattedFromContact ||
           resolvedContact?.number ||
           (resolvedContact as any)?.id?.user ||
-          message.from.split("@")[0];
+          jidUser;
 
-        const whatsappNumber = db.normalizePhone(rawNumber);
+        const normalizedCandidate = db.normalizePhone(rawNumber);
+        const looksLikePhone = /^\d{10,13}$/.test(normalizedCandidate);
+        const whatsappNumber = formattedFromContact
+          ? normalizedCandidate
+          : looksLikePhone
+            ? normalizedCandidate
+            : jidUser; // manter ID cru se não parecer telefone
+
+        const displayNumber = formattedFromContact || (looksLikePhone ? normalizedCandidate : jidUser);
+
         console.log(
-          `[WhatsApp] Message received from raw ${rawNumber}, normalized ${whatsappNumber}: ${message.body}`
+          `[WhatsApp] Message received from raw ${rawNumber}, normalized/display ${whatsappNumber} (${displayNumber}), jid ${fullJid}: ${message.body}`
         );
 
         const contactName =
@@ -455,18 +468,48 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
 
         // Buscar ou criar contato (considerando normalização)
         let contact = await db.getContactByNumber(dbInstance.workspaceId, whatsappNumber);
+
+        // Fallback: tentar localizar por JID salvo em metadata
+        if (!contact) {
+          const allContacts = await db.getContactsByWorkspace(dbInstance.workspaceId);
+          contact = allContacts.find(c => (c.metadata as any)?.whatsappJid === fullJid || c.whatsappNumber === jidUser);
+        }
         
         if (!contact) {
-          console.log(`[WhatsApp] Creating new contact for ${whatsappNumber}`);
+          console.log(`[WhatsApp] Creating new contact for ${whatsappNumber} (jid: ${fullJid})`);
           const contactId = await db.createContact({
             workspaceId: dbInstance.workspaceId,
             whatsappNumber,
             name: contactName,
+            metadata: {
+              whatsappJid: fullJid,
+              displayNumber,
+              lastNormalized: normalizedCandidate,
+            },
           });
           console.log(`[WhatsApp] Contact created with ID: ${contactId}`);
           contact = await db.getContactByNumber(dbInstance.workspaceId, whatsappNumber);
         } else {
           console.log(`[WhatsApp] Contact found: ${contact.id} - ${contact.name}`);
+          // Se agora temos um número formatado e melhor que o salvo, atualizar
+          if (looksLikePhone && contact.whatsappNumber !== whatsappNumber) {
+            try {
+              console.log(
+                `[WhatsApp] Updating contact ${contact.id} whatsappNumber from ${contact.whatsappNumber} to ${whatsappNumber}`
+              );
+              await db.updateContactWhatsappNumber(contact.id, whatsappNumber);
+              contact.whatsappNumber = whatsappNumber;
+            } catch (updateErr) {
+              console.warn(`[WhatsApp] Could not update contact number:`, updateErr);
+            }
+          }
+          // Garantir que o JID está salvo em metadata
+          await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
+            ...metadata,
+            whatsappJid: fullJid,
+            displayNumber: formattedFromContact || metadata.displayNumber || contact.whatsappNumber,
+            lastNormalized: normalizedCandidate,
+          }));
         }
 
         if (!contact) {

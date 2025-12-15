@@ -24,6 +24,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -63,7 +69,19 @@ const DEFAULT_COLUMNS: KanbanColumn[] = [
   { id: "collaborators_fixed", title: "Colaboradores", color: "bg-emerald-600" },
 ];
 
-function ContactCard({ contact, onClick, onArchive }: { contact: Contact; onClick?: () => void; onArchive?: () => void }) {
+function ContactCard({ 
+  contact, 
+  onClick, 
+  onArchive,
+  columns,
+  onMoveContact
+}: { 
+  contact: Contact; 
+  onClick?: () => void; 
+  onArchive?: () => void;
+  columns?: KanbanColumn[];
+  onMoveContact?: (contactId: number, status: string) => void;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `contact-${contact.id}`,
     data: {
@@ -80,63 +98,92 @@ function ContactCard({ contact, onClick, onArchive }: { contact: Contact; onClic
   };
 
   const hasUnread = Boolean(contact.metadata?.unread);
+  const phoneLabel = (contact.metadata as any)?.displayNumber || contact.whatsappNumber;
+  const currentStatus = contact.kanbanStatus || "waiting_attendant";
+  const moveColumns = columns || [];
 
   return (
-    <div 
-      ref={setNodeRef} 
-      style={style} 
-      {...attributes} 
-      {...listeners}
-      onClick={(e) => {
-        // Só chama onClick se não estiver arrastando
-        if (!isDragging && onClick) {
-          onClick();
-        }
-      }}
-    >
-      <Card className="relative p-3 hover:shadow-md transition-shadow hover:ring-2 hover:ring-primary">
-        {hasUnread && (
-          <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 ring-2 ring-background" />
-        )}
-        <div className="flex items-start justify-between gap-3">
-          {contact.profilePicUrl ? (
-            <img
-              src={contact.profilePicUrl}
-              alt={contact.name || "Contato"}
-              className="w-10 h-10 rounded-full object-cover"
-            />
-          ) : (
-            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-              <span className="text-sm font-medium text-primary">
-                {contact.name?.charAt(0).toUpperCase() || "?"}
-              </span>
-            </div>
-          )}
-          <div className="flex-1 min-w-0 pr-2">
-            <p className="font-medium text-sm truncate">{contact.name || "Sem nome"}</p>
-            <div className="flex items-center gap-1 text-xs text-muted-foreground mt-1">
-              <Phone className="w-3 h-3" />
-              <span className="truncate">{contact.whatsappNumber}</span>
-            </div>
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            {onArchive && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onArchive();
-                }}
-              >
-                <Archive className="w-3 h-3" />
-              </Button>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div 
+          ref={setNodeRef} 
+          style={style} 
+          {...attributes} 
+          {...listeners}
+          onClick={(e) => {
+            // Só chama onClick se não estiver arrastando
+            if (!isDragging && onClick) {
+              onClick();
+            }
+          }}
+        >
+          <Card className="relative p-3 hover:shadow-md transition-shadow hover:ring-2 hover:ring-primary">
+            {hasUnread && (
+              <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 ring-2 ring-background" />
             )}
-          </div>
+            <div className="flex items-start justify-between gap-3">
+              {contact.profilePicUrl ? (
+                <img
+                  src={contact.profilePicUrl}
+                  alt={contact.name || "Contato"}
+                  className="w-10 h-10 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                  <span className="text-sm font-medium text-primary">
+                    {contact.name?.charAt(0).toUpperCase() || "?"}
+                  </span>
+                </div>
+              )}
+              <div className="flex-1 min-w-0 pr-2">
+                <p className="font-medium text-sm truncate">{contact.name || "Sem nome"}</p>
+                <div className="flex items-center gap-1 text-xs text-muted-foreground mt-1">
+                  <Phone className="w-3 h-3" />
+                  <span className="truncate">{phoneLabel}</span>
+                </div>
+              </div>
+              <div className="flex flex-col items-end gap-2">
+                {onArchive && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onArchive();
+                    }}
+                  >
+                    <Archive className="w-3 h-3" />
+                  </Button>
+                )}
+              </div>
+            </div>
+          </Card>
         </div>
-      </Card>
-    </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem disabled className="font-medium">
+          Enviar para coluna
+        </ContextMenuItem>
+        {moveColumns.map((col) => (
+          <ContextMenuItem
+            key={col.id}
+            disabled={col.id === currentStatus}
+            onSelect={() => onMoveContact?.(contact.id, col.id)}
+          >
+            {col.title}
+          </ContextMenuItem>
+        ))}
+        {onArchive && (
+          <ContextMenuItem
+            variant="destructive"
+            onSelect={() => onArchive()}
+          >
+            Arquivar do quadro
+          </ContextMenuItem>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -145,12 +192,16 @@ function DroppableColumn({
   contacts,
   onContactClick,
   onArchiveContact,
+  allColumns,
+  onMoveContact,
   onDeleteSellerColumn,
 }: { 
   column: KanbanColumn; 
   contacts: Contact[];
   onContactClick: (contact: Contact) => void;
   onArchiveContact: (contact: Contact) => void;
+  allColumns: KanbanColumn[];
+  onMoveContact: (contactId: number, status: string) => void;
   onDeleteSellerColumn?: (columnId: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
@@ -201,6 +252,8 @@ function DroppableColumn({
                 contact={contact}
                 onClick={() => onContactClick(contact)}
                 onArchive={() => onArchiveContact(contact)}
+                columns={allColumns}
+                onMoveContact={onMoveContact}
               />
             ))
           ) : (
@@ -442,8 +495,24 @@ export default function Kanban() {
         contactId,
         status: newStatus,
       });
-      
-      toast.success("Status atualizado!");
+      refetch();
+    } catch (error) {
+      toast.error("Erro ao atualizar status");
+      console.error(error);
+    }
+  };
+
+  const handleMoveContact = async (contactId: number, status: string) => {
+    const contact = contacts?.find((c) => c.id === contactId);
+    if (!contact) return;
+    const nextStatus = allowedStatuses.has(status) ? status : "waiting_attendant";
+    if (contact.kanbanStatus === nextStatus) return;
+
+    try {
+      await updateStatus.mutateAsync({
+        contactId,
+        status: nextStatus,
+      });
       refetch();
     } catch (error) {
       toast.error("Erro ao atualizar status");
@@ -519,7 +588,9 @@ export default function Kanban() {
                       column={column}
                       contacts={columnContacts}
                       onContactClick={handleContactClick}
-                  onArchiveContact={handleArchiveContact}
+                      onArchiveContact={handleArchiveContact}
+                      allColumns={kanbanColumns}
+                      onMoveContact={handleMoveContact}
                       onDeleteSellerColumn={
                         column.isSeller ? () => handleDeleteSellerColumn(column.id) : undefined
                       }
