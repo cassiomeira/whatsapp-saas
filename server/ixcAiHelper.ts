@@ -93,6 +93,35 @@ export function detectarIntencaoIXC(mensagem: string): {
 }
 
 /**
+ * Detectar se o cliente pediu fatura/boleto a vencer
+ */
+export function solicitouFaturaAVencer(mensagem: string): boolean {
+  const msg = mensagem.toLowerCase();
+  const gatilhos = [
+    "a vencer",
+    "vai vencer",
+    "que vai vencer",
+    "mês que vem",
+    "mes que vem",
+    "proximo mes",
+    "próximo mes",
+    "próximo mês",
+    "proxima fatura",
+    "próxima fatura",
+    "próximo boleto",
+    "proximo boleto",
+    "boleto do mes que vem",
+    "fatura do mes que vem",
+    "fatura para vencer",
+    "boleto para vencer",
+    "próxima conta",
+    "proxima conta"
+  ];
+
+  return gatilhos.some(p => msg.includes(p));
+}
+
+/**
  * Processar consulta de fatura via IXC
  */
 export async function processarConsultaFatura(
@@ -100,7 +129,8 @@ export async function processarConsultaFatura(
   telefone: string,
   documento?: string,
   contactId?: number,
-  conversationId?: number
+  conversationId?: number,
+  incluirAVencer: boolean = false
 ): Promise<string> {
   try {
     console.log(`[IXC AI Helper] processarConsultaFatura chamado - workspaceId: ${workspaceId}, telefone: ${telefone}, documento: ${documento}`);
@@ -203,35 +233,54 @@ export async function processarConsultaFatura(
 
     console.log(`[IXC AI Helper] Faturas abertas retornadas do serviço: ${faturasAbertas.length}`);
 
-    // Filtrar apenas faturas VENCIDAS - EXATAMENTE como no script Python
+    // Classificar faturas entre vencidas (< hoje) e a vencer (>= hoje)
     const hoje = new Date();
     hoje.setHours(0, 0, 0, 0);
     
-    const faturasVencidas = faturasAbertas.filter((fatura: IXCFatura) => {
+    const faturasVencidas: IXCFatura[] = [];
+    const faturasAVencer: IXCFatura[] = [];
+
+    for (const fatura of faturasAbertas) {
       try {
-        // Python: data_obj = datetime.strptime(data_str, '%Y-%m-%d').date()
         const dataVencStr = fatura.data_vencimento.split('T')[0]; // Remove hora se houver
         const [ano, mes, dia] = dataVencStr.split('-').map(Number);
         const dataVenc = new Date(ano, mes - 1, dia);
         dataVenc.setHours(0, 0, 0, 0);
         
-        // Python: if data_obj < hoje
         const isVencida = dataVenc < hoje;
         
         console.log(`[IXC AI Helper] Fatura ${fatura.id}: venc="${dataVencStr}" -> ${dataVenc.toLocaleDateString('pt-BR')} - Vencida: ${isVencida}`);
         
-        return isVencida;
+        if (isVencida) {
+          faturasVencidas.push(fatura);
+        } else {
+          faturasAVencer.push(fatura);
+        }
       } catch (error) {
         console.error(`[IXC AI Helper] Erro ao processar data da fatura ${fatura.id}:`, error);
-        return false;
       }
-    });
+    }
 
     console.log(`[IXC AI Helper] === RESULTADO DO FILTRO ===`);
     console.log(`[IXC AI Helper] Total abertas: ${faturasAbertas.length}`);
     console.log(`[IXC AI Helper] Total vencidas: ${faturasVencidas.length}`);
+    console.log(`[IXC AI Helper] Total a vencer: ${faturasAVencer.length}`);
 
-    if (faturasVencidas.length === 0) {
+    // Considerar apenas a próxima fatura a vencer quando solicitado
+    let faturasAVencerConsideradas: IXCFatura[] = [];
+    if (incluirAVencer && faturasAVencer.length > 0) {
+      faturasAVencerConsideradas = [...faturasAVencer]
+        .sort((a, b) => {
+          const da = new Date(a.data_vencimento.split("T")[0]).getTime();
+          const db = new Date(b.data_vencimento.split("T")[0]).getTime();
+          return da - db;
+        })
+        .slice(0, 1);
+    }
+
+    const deveIncluirAVencer = faturasAVencerConsideradas.length > 0;
+
+    if (faturasVencidas.length === 0 && !deveIncluirAVencer) {
       await incrementIxcMetric(workspaceId, "consulta", true);
       await createIxcEvent({
         workspaceId,
@@ -247,78 +296,94 @@ export async function processarConsultaFatura(
     // Reutilizar workspace e metadata já obtidos no início da função
     const ixcUrl = metadata?.ixcApiUrl || 'sis.netcartelecom.com.br';
 
-    // Formatar resposta com as faturas VENCIDAS em aberto
-    let resposta = `Olá ${cliente.razao}! 📋\n\n⚠️ ATENÇÃO: ${faturasVencidas.length} ${faturasVencidas.length === 1 ? "fatura vencida" : "faturas vencidas"} em aberto:\n\n`;
-
     // Baixar boletos e preparar para envio
     const boletosParaEnviar: Array<{ idFatura: number; pdfBase64: string; nomeArquivo: string }> = [];
+    let resposta = `Olá ${cliente.razao}! 📋\n\n`;
 
-    for (let index = 0; index < faturasVencidas.length; index++) {
-      const fatura = faturasVencidas[index];
-      const valor = ixcService.formatarValor(fatura.valor);
-      const vencimento = ixcService.formatarData(fatura.data_vencimento);
+    async function adicionarSecaoFaturas(lista: IXCFatura[], titulo: string, label: string) {
+      if (!lista.length) return;
 
-      resposta += `${index + 1}. ⚠️ VENCIDA\n`;
-      resposta += `   💰 Valor: ${valor}\n`;
-      resposta += `   📆 Vencimento: ${vencimento}\n`;
-      if (fatura.documento) {
-        resposta += `   📄 Documento: ${fatura.documento}\n`;
-      }
-      
-      // Adicionar código de barras (linha digitável) se disponível
-      const linhaDigitavel = (fatura as any).linha_digitavel;
-      console.log(`[IXC AI Helper] Fatura ${fatura.id} - linha_digitavel:`, linhaDigitavel ? 'SIM' : 'NÃO', linhaDigitavel);
-      
-      if (linhaDigitavel) {
-        resposta += `   🔢 Código de Barras (Linha Digitável):\n`;
-        resposta += `   ${linhaDigitavel}\n`;
-      } else {
-        resposta += `   ⚠️ Esta fatura não possui código de barras gerado.\n`;
-      }
-      
-      // Adicionar link do boleto se disponível
-      const linkBoleto = (fatura as any).boleto || fatura.url_boleto;
-      if (linkBoleto) {
-        let linkCompleto = linkBoleto;
-        if (!linkBoleto.startsWith('http')) {
-          linkCompleto = `https://${ixcUrl}/${linkBoleto}`;
+      resposta += `${titulo}\n\n`;
+
+      for (let index = 0; index < lista.length; index++) {
+        const fatura = lista[index];
+        const valor = ixcService.formatarValor(fatura.valor);
+        const vencimento = ixcService.formatarData(fatura.data_vencimento);
+
+        resposta += `${index + 1}. ${label}\n`;
+        resposta += `   💰 Valor: ${valor}\n`;
+        resposta += `   📆 Vencimento: ${vencimento}\n`;
+        if (fatura.documento) {
+          resposta += `   📄 Documento: ${fatura.documento}\n`;
         }
-        resposta += `   🔗 Link do Boleto: ${linkCompleto}\n`;
-      }
-      
-      resposta += `\n`;
-      
-      // Baixar boleto para enviar via WhatsApp
-      try {
-        console.log(`[IXC AI Helper] ========================================`);
-        console.log(`[IXC AI Helper] Baixando boleto ${fatura.id}...`);
-        const resultadoBoleto = await ixcService.buscarBoleto(fatura.id);
-        console.log(`[IXC AI Helper] Resultado do download:`, {
-          success: resultadoBoleto.success,
-          temPDF: !!resultadoBoleto.pdfBase64,
-          tamanhoPDF: resultadoBoleto.pdfBase64 ? resultadoBoleto.pdfBase64.length : 0,
-          erro: resultadoBoleto.error
-        });
         
-        if (resultadoBoleto.success && resultadoBoleto.pdfBase64) {
-          boletosParaEnviar.push({
-            idFatura: fatura.id,
-            pdfBase64: resultadoBoleto.pdfBase64,
-            nomeArquivo: `Boleto_${fatura.id}.pdf`
-          });
-          console.log(`[IXC AI Helper] ✅ Boleto ${fatura.id} baixado com sucesso (${resultadoBoleto.pdfBase64.length} bytes)`);
-          await incrementIxcMetric(workspaceId, "boleto", true);
-          await createIxcEvent({
-            workspaceId,
-            contactId,
-            conversationId,
-            type: "boleto",
-            status: "success",
-            invoiceId: fatura.id,
-            message: `Boleto ${fatura.id} enviado | contatoId=${contactId ?? "?"} | tel=${telefone}`,
-          });
+        // Adicionar código de barras (linha digitável) se disponível
+        const linhaDigitavel = (fatura as any).linha_digitavel;
+        console.log(`[IXC AI Helper] Fatura ${fatura.id} - linha_digitavel:`, linhaDigitavel ? 'SIM' : 'NÃO', linhaDigitavel);
+        
+        if (linhaDigitavel) {
+          resposta += `   🔢 Código de Barras (Linha Digitável):\n`;
+          resposta += `   ${linhaDigitavel}\n`;
         } else {
-          console.error(`[IXC AI Helper] ❌ Erro ao baixar boleto ${fatura.id}:`, resultadoBoleto.error);
+          resposta += `   ⚠️ Esta fatura não possui código de barras gerado.\n`;
+        }
+        
+        // Adicionar link do boleto se disponível
+        const linkBoleto = (fatura as any).boleto || fatura.url_boleto;
+        if (linkBoleto) {
+          let linkCompleto = linkBoleto;
+          if (!linkBoleto.startsWith('http')) {
+            linkCompleto = `https://${ixcUrl}/${linkBoleto}`;
+          }
+          resposta += `   🔗 Link do Boleto: ${linkCompleto}\n`;
+        }
+        
+        resposta += `\n`;
+        
+        // Baixar boleto para enviar via WhatsApp
+        try {
+          console.log(`[IXC AI Helper] ========================================`);
+          console.log(`[IXC AI Helper] Baixando boleto ${fatura.id}...`);
+          const resultadoBoleto = await ixcService.buscarBoleto(fatura.id);
+          console.log(`[IXC AI Helper] Resultado do download:`, {
+            success: resultadoBoleto.success,
+            temPDF: !!resultadoBoleto.pdfBase64,
+            tamanhoPDF: resultadoBoleto.pdfBase64 ? resultadoBoleto.pdfBase64.length : 0,
+            erro: resultadoBoleto.error
+          });
+          
+          if (resultadoBoleto.success && resultadoBoleto.pdfBase64) {
+            boletosParaEnviar.push({
+              idFatura: fatura.id,
+              pdfBase64: resultadoBoleto.pdfBase64,
+              nomeArquivo: `Boleto_${fatura.id}.pdf`
+            });
+            console.log(`[IXC AI Helper] ✅ Boleto ${fatura.id} baixado com sucesso (${resultadoBoleto.pdfBase64.length} bytes)`);
+            await incrementIxcMetric(workspaceId, "boleto", true);
+            await createIxcEvent({
+              workspaceId,
+              contactId,
+              conversationId,
+              type: "boleto",
+              status: "success",
+              invoiceId: fatura.id,
+              message: `Boleto ${fatura.id} enviado | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+            });
+          } else {
+            console.error(`[IXC AI Helper] ❌ Erro ao baixar boleto ${fatura.id}:`, resultadoBoleto.error);
+            await incrementIxcMetric(workspaceId, "boleto", false);
+            await createIxcEvent({
+              workspaceId,
+              contactId,
+              conversationId,
+              type: "boleto",
+              status: "fail",
+              invoiceId: fatura.id,
+              message: `${resultadoBoleto.error || "Falha ao baixar boleto"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+            });
+          }
+        } catch (error) {
+          console.error(`[IXC AI Helper] Exceção ao baixar boleto ${fatura.id}:`, error);
           await incrementIxcMetric(workspaceId, "boleto", false);
           await createIxcEvent({
             workspaceId,
@@ -327,22 +392,20 @@ export async function processarConsultaFatura(
             type: "boleto",
             status: "fail",
             invoiceId: fatura.id,
-            message: `${resultadoBoleto.error || "Falha ao baixar boleto"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+            message: `${(error as any)?.message || "Exceção ao baixar boleto"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
           });
         }
-      } catch (error) {
-        console.error(`[IXC AI Helper] Exceção ao baixar boleto ${fatura.id}:`, error);
-        await incrementIxcMetric(workspaceId, "boleto", false);
-        await createIxcEvent({
-          workspaceId,
-          contactId,
-          conversationId,
-          type: "boleto",
-          status: "fail",
-          invoiceId: fatura.id,
-          message: `${(error as any)?.message || "Exceção ao baixar boleto"} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
-        });
       }
+    }
+
+    if (faturasVencidas.length > 0) {
+      const tituloVencidas = `⚠️ ATENÇÃO: ${faturasVencidas.length} ${faturasVencidas.length === 1 ? "fatura vencida" : "faturas vencidas"} em aberto:`;
+      await adicionarSecaoFaturas(faturasVencidas, tituloVencidas, "⚠️ VENCIDA");
+    }
+
+    if (deveIncluirAVencer) {
+      const tituloAVencer = `📅 Próxima fatura a vencer (${faturasAVencerConsideradas.length}):`;
+      await adicionarSecaoFaturas(faturasAVencerConsideradas, tituloAVencer, "📅 A VENCER");
     }
 
     console.log(`[IXC AI Helper] ========================================`);
@@ -353,8 +416,10 @@ export async function processarConsultaFatura(
       resposta += `\n📄 *Boleto(s) em anexo*\n\n`;
     }
     
-    resposta += `*Deseja realizar o desbloqueio de confiança?*\n\n`;
-    resposta += `Digite *SIM* para desbloquear ou *NÃO* para cancelar.`;
+    if (faturasVencidas.length > 0) {
+      resposta += `*Deseja realizar o desbloqueio de confiança?*\n\n`;
+      resposta += `Digite *SIM* para desbloquear ou *NÃO* para cancelar.`;
+    }
 
     // Se houver boletos, retornar como JSON para processamento especial
     if (boletosParaEnviar.length > 0) {
@@ -366,7 +431,7 @@ export async function processarConsultaFatura(
         conversationId,
         type: "consulta",
         status: "success",
-        message: `Consulta com ${boletosParaEnviar.length} boleto(s) | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+        message: `Consulta com ${boletosParaEnviar.length} boleto(s) | vencidas=${faturasVencidas.length} | aVencer=${deveIncluirAVencer ? faturasAVencerConsideradas.length : 0} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
       });
       return JSON.stringify({
         tipo: 'consulta_com_boletos',
@@ -384,7 +449,7 @@ export async function processarConsultaFatura(
       conversationId,
       type: "consulta",
       status: "success",
-      message: `Consulta sem boleto (retorno texto) | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+        message: `Consulta sem boleto (retorno texto) | vencidas=${faturasVencidas.length} | aVencer=${deveIncluirAVencer ? faturasAVencerConsideradas.length : 0} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
     });
     return resposta;
   } catch (error: any) {

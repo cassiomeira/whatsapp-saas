@@ -1,5 +1,5 @@
 import * as db from "./db";
-import { detectarDocumento, processarConsultaFatura, processarDesbloqueio } from "./ixcAiHelper";
+import { detectarDocumento, processarConsultaFatura, processarDesbloqueio, solicitouFaturaAVencer } from "./ixcAiHelper";
 
 /**
  * Verificar se é primeira mensagem do contato (nova conversa)
@@ -28,6 +28,14 @@ export async function processarFluxoRobotizado(
   const conversations = await db.getConversationsByWorkspace(workspaceId);
   const currentConv = conversations.find(c => c.id === conversationId);
   const currentContactId = currentConv?.contactId;
+  const mensagensHistorico = await db.getMessagesByConversation(conversationId);
+  const recentUserMessages = mensagensHistorico
+    .filter(m => m.senderType === "user" || m.senderType === "contact")
+    .slice(-5)
+    .map(m => (m.content || "").toLowerCase());
+  const querFaturaAVencer =
+    solicitouFaturaAVencer(mensagem) ||
+    recentUserMessages.some(msg => solicitouFaturaAVencer(msg));
   
   // Verificar se é primeira mensagem - enviar saudação inicial
   const isFirst = await isFirstMessage(conversationId);
@@ -62,7 +70,7 @@ export async function processarFluxoRobotizado(
     if (documento) {
       // Já tem CPF - processar consulta diretamente
       console.log(`[Automated Flow] CPF detectado na mensagem: ${documento}. Processando consulta...`);
-      const resposta = await processarConsultaFatura(workspaceId, whatsappNumber, documento, currentContactId ?? undefined, conversationId);
+      const resposta = await processarConsultaFatura(workspaceId, whatsappNumber, documento, currentContactId ?? undefined, conversationId, querFaturaAVencer);
       return resposta;
     } else {
       // Não tem CPF - pedir CPF
@@ -144,7 +152,7 @@ export async function processarFluxoRobotizado(
     if (botPediuCPF) {
       // Cliente forneceu CPF após ser solicitado - processar consulta
       console.log(`[Automated Flow] ✅ CPF fornecido após solicitação: ${documentoNaMensagem}. Processando consulta...`);
-      const resposta = await processarConsultaFatura(workspaceId, whatsappNumber, documentoNaMensagem, currentContactId ?? undefined, conversationId);
+      const resposta = await processarConsultaFatura(workspaceId, whatsappNumber, documentoNaMensagem, currentContactId ?? undefined, conversationId, querFaturaAVencer);
       console.log(`[Automated Flow] Resposta da consulta (tipo):`, typeof resposta);
       console.log(`[Automated Flow] Resposta da consulta (preview):`, typeof resposta === 'string' ? resposta.substring(0, 100) : 'objeto');
       return resposta;
@@ -153,7 +161,7 @@ export async function processarFluxoRobotizado(
       // Mas como estamos no fluxo robotizado, vamos processar mesmo assim se for apenas números
       if (messageContent.trim().replace(/\D/g, "").length === 11 || messageContent.trim().replace(/\D/g, "").length === 14) {
         console.log(`[Automated Flow] ⚠️ Documento detectado mas bot não pediu explicitamente. Processando mesmo assim...`);
-        const resposta = await processarConsultaFatura(workspaceId, whatsappNumber, documentoNaMensagem, currentContactId ?? undefined, conversationId);
+        const resposta = await processarConsultaFatura(workspaceId, whatsappNumber, documentoNaMensagem, currentContactId ?? undefined, conversationId, querFaturaAVencer);
         console.log(`[Automated Flow] Resposta da consulta:`, typeof resposta === 'string' ? resposta.substring(0, 100) : 'objeto');
         return resposta;
       }

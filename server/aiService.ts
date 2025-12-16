@@ -1,7 +1,7 @@
 import { invokeLLM } from "./_core/llm";
 import { transcribeAudio } from "./_core/voiceTranscription";
 import * as db from "./db";
-import { detectarIntencaoIXC, processarConsultaFatura, processarDesbloqueio, enriquecerPromptComIXC, detectarDocumento } from "./ixcAiHelper";
+import { detectarIntencaoIXC, processarConsultaFatura, processarDesbloqueio, enriquecerPromptComIXC, detectarDocumento, solicitouFaturaAVencer } from "./ixcAiHelper";
 import { processarFluxoRobotizado } from "./automatedFlowHelper";
 import { detectarPedidoAtendente, detectarIndecisaoOuSemFechamento, gerarMensagemTransferencia, enriquecerPromptComAtendimento } from "./humanAttendantHelper";
 import type { Product } from "../drizzle/schema";
@@ -1117,6 +1117,11 @@ export async function processIncomingMessage(
       const botPediuCPF = recentBotMessages.some(msg => 
         msg.includes("preciso do cpf") || msg.includes("cpf ou cnpj") || msg.includes("informe seu cpf")
       );
+      const recentUserMessages = messages
+        .filter(m => m.senderType === "user" && m.createdAt)
+        .slice(-5)
+        .map(m => m.content?.toLowerCase() || "");
+      const historicoPedeAVencer = recentUserMessages.some(msg => solicitouFaturaAVencer(msg));
       
       // Detectar intenção IXC
       const intencaoIXC = detectarIntencaoIXC(processedContent);
@@ -1127,11 +1132,6 @@ export async function processIncomingMessage(
       const documentoNaMensagem = detectarDocumento(processedContent);
       if (botPediuCPF && documentoNaMensagem && intencaoIXC.tipo === "nenhuma") {
         // Verificar contexto: se foi pedido para desbloqueio ou consulta
-        const recentUserMessages = messages
-          .filter(m => m.senderType === "user" && m.createdAt)
-          .slice(-5)
-          .map(m => m.content?.toLowerCase() || "");
-        
         const pediuDesbloqueio = recentUserMessages.some(msg => 
           msg.includes("liberar") || msg.includes("desbloquear") || msg.includes("desbloqueio") ||
           msg.includes("paguei") || msg.includes("paguei minha conta")
@@ -1151,6 +1151,7 @@ export async function processIncomingMessage(
       }
 
       const normalizedContent = processedContent.toLowerCase();
+      const querFaturaAVencer = solicitouFaturaAVencer(normalizedContent) || historicoPedeAVencer;
       // Palavras-chave financeiras mais específicas (removidas palavras genéricas como "valor", "pagar")
       const financeKeywords = [
         "fatura",
@@ -1192,11 +1193,14 @@ export async function processIncomingMessage(
         // Processar diretamente com IXC
         if (intencaoIXC.tipo === "consulta_fatura") {
           console.log(`[AI Service] Processando consulta de fatura com IXC (documento: ${intencaoIXC.documento})`);
-        botResponse = await processarConsultaFatura(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id);
+        botResponse = await processarConsultaFatura(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id, querFaturaAVencer);
         } else if (intencaoIXC.tipo === "desbloqueio") {
           console.log(`[AI Service] Processando desbloqueio com IXC (documento: ${intencaoIXC.documento})`);
         botResponse = await processarDesbloqueio(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id);
         }
+      } else if (temConfiguracaoIXC && intencaoIXC.tipo === "desbloqueio" && !intencaoIXC.documento && !documentoNaMensagem) {
+        // Cliente perguntou sobre bloqueio mas ainda não forneceu documento: pedir CPF/CNPJ
+        botResponse = "Para verificar se seu acesso está bloqueado ou liberar o sinal, preciso do CPF ou CNPJ do titular da conta. Pode me informar, por favor?";
       } else {
         // REATIVAR IA: Se não processou com IXC, deixar IA responder
         console.log(`[AI Service] Não processou com IXC. Ativando IA para responder...`);
