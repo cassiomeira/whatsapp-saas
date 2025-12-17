@@ -1118,10 +1118,22 @@ export async function processIncomingMessage(
         msg.includes("preciso do cpf") || msg.includes("cpf ou cnpj") || msg.includes("informe seu cpf")
       );
       const recentUserMessages = messages
-        .filter(m => m.senderType === "user" && m.createdAt)
+        .filter(m => m.senderType === "contact" && m.createdAt)
         .slice(-5)
         .map(m => m.content?.toLowerCase() || "");
       const historicoPedeAVencer = recentUserMessages.some(msg => solicitouFaturaAVencer(msg));
+      
+      // Capturar documento já fornecido no histórico para evitar pedir novamente
+      const documentoHistorico = (() => {
+        const contatoMsgs = messages
+          .filter(m => m.senderType === "contact" && m.content)
+          .slice(-20); // últimos 20 registros do contato
+        for (let i = contatoMsgs.length - 1; i >= 0; i--) {
+          const doc = detectarDocumento(contatoMsgs[i].content || "");
+          if (doc) return doc;
+        }
+        return null;
+      })();
       
       // Detectar intenção IXC
       const intencaoIXC = detectarIntencaoIXC(processedContent);
@@ -1148,6 +1160,12 @@ export async function processIncomingMessage(
           intencaoIXC.confianca = 0.95;
           intencaoIXC.documento = documentoNaMensagem;
         }
+      }
+      
+      // Se já temos documento no histórico e não foi capturado pela intenção, reutilizar para não ficar pedindo novamente
+      if (!intencaoIXC.documento && documentoHistorico) {
+        intencaoIXC.documento = documentoHistorico;
+        console.log(`[AI Service] Reutilizando documento do histórico: ${documentoHistorico}`);
       }
 
       const normalizedContent = processedContent.toLowerCase();
@@ -1198,7 +1216,7 @@ export async function processIncomingMessage(
           console.log(`[AI Service] Processando desbloqueio com IXC (documento: ${intencaoIXC.documento})`);
         botResponse = await processarDesbloqueio(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id);
         }
-      } else if (temConfiguracaoIXC && intencaoIXC.tipo === "desbloqueio" && !intencaoIXC.documento && !documentoNaMensagem) {
+      } else if (temConfiguracaoIXC && intencaoIXC.tipo === "desbloqueio" && !intencaoIXC.documento && !documentoNaMensagem && !documentoHistorico) {
         // Cliente perguntou sobre bloqueio mas ainda não forneceu documento: pedir CPF/CNPJ
         botResponse = "Para verificar se seu acesso está bloqueado ou liberar o sinal, preciso do CPF ou CNPJ do titular da conta. Pode me informar, por favor?";
       } else {
@@ -1253,6 +1271,86 @@ export async function processIncomingMessage(
       if (!botResponse || botResponse === "") {
         console.log(`[AI Service] ⚠️ botResponse vazio após processamento. Usando mensagem padrão.`);
         botResponse = "Desculpe, não entendi sua solicitação. Por favor, digite:\n\n1️⃣ - Para consultar faturas em aberto\n2️⃣ - Para falar com atendente";
+      }
+
+      // Se o bot pediu CPF e o cliente já respondeu várias vezes sem enviar, transferir para suporte
+      const atrasouEnvioCpf = (() => {
+        if (!botPediuCPF || documentoNaMensagem || documentoHistorico) return false;
+        const msgs = messages;
+        let lastAskIndex = -1;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const msg = msgs[i];
+          if (msg.senderType === "bot") {
+            const texto = (msg.content || "").toLowerCase();
+            if (
+              texto.includes("cpf ou cnpj") ||
+              texto.includes("preciso do cpf") ||
+              texto.includes("informe seu cpf") ||
+              texto.includes("por favor, informe o cpf")
+            ) {
+              lastAskIndex = i;
+              break;
+            }
+          }
+        }
+        if (lastAskIndex === -1) return false;
+        let respostasSemDocumento = 0;
+        for (let j = lastAskIndex + 1; j < msgs.length; j++) {
+          const m = msgs[j];
+          if (m.senderType === "contact") {
+            const doc = detectarDocumento(m.content || "");
+            if (doc) return false; // já enviou
+            respostasSemDocumento++;
+          }
+        }
+        return respostasSemDocumento >= 2; // duas interações sem documento
+      })();
+
+      if (atrasouEnvioCpf) {
+        botResponse =
+          "Notei que ainda não recebemos o CPF/CNPJ para avançar. Vou acionar nosso suporte técnico para agilizar essa verificação e entender por que sua conexão não está funcionando. Um atendente vai assumir agora.";
+        try {
+          await db.updateContactKanbanStatus(contactId, "waiting_attendant");
+          await db.updateConversationStatus(activeConv.id, "pending_human");
+        } catch (err) {
+          console.error("[AI Service] Erro ao mover contato por atraso de CPF:", err);
+        }
+      }
+
+      // Se cliente pede internet em zona rural, transferir para suporte para checar viabilidade
+      const querInternet = ["internet", "plano", "wifi", "fibra"].some(k => normalizedContent.includes(k));
+      const zonaRural = ["zona rural", "rural", "sítio", "sitio", "chácara", "chacara", "fazenda", "interior", "roça", "roca"].some(k =>
+        normalizedContent.includes(k)
+      );
+      if (querInternet && zonaRural) {
+        botResponse =
+          "Entendi que você deseja internet em uma área rural. Vou acionar nosso suporte técnico para verificar cobertura e viabilidade no seu endereço. Um atendente vai assumir a partir de agora.";
+        try {
+          await db.updateContactKanbanStatus(contactId, "waiting_attendant");
+          await db.updateConversationStatus(activeConv.id, "pending_human");
+        } catch (err) {
+          console.error("[AI Service] Erro ao mover contato para suporte por zona rural:", err);
+        }
+      }
+
+      // Se o cliente relatou falta de internet e o financeiro está ok, acionar suporte técnico
+      const semInternetKeywords = ["sem internet", "sem conex", "sem sinal", "internet caiu", "caiu a internet", "internet não funciona", "internet nao funciona"];
+      const reportaSemInternet = semInternetKeywords.some(k => normalizedContent.includes(k));
+      const financeiroOk =
+        botResponse.toLowerCase().includes("não há faturas em atraso") ||
+        botResponse.toLowerCase().includes("não ha faturas em atraso") ||
+        botResponse.toLowerCase().includes("está em dia") ||
+        botResponse.toLowerCase().includes("esta em dia");
+      if (reportaSemInternet && financeiroOk) {
+        botResponse =
+          `${botResponse}\n\nEntendi que você está sem internet e sua parte financeira está ok. Vou acionar nosso suporte técnico agora para verificar. Enquanto isso, confirme por favor:\n- O roteador está ligado e com luzes acesas?\n- Algum cabo está solto ou desconectado?\n\nUm atendente técnico vai assumir a partir daqui.`;
+        // mover contato para aguardando atendente para suporte técnico
+        try {
+          await db.updateContactKanbanStatus(contactId, "waiting_attendant");
+          await db.updateConversationStatus(activeConv.id, "pending_human");
+        } catch (err) {
+          console.error("[AI Service] Erro ao mover contato para suporte técnico:", err);
+        }
       }
 
       const botResponseLowerCase = botResponse.toLowerCase();
