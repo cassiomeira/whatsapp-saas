@@ -2,13 +2,13 @@ import DashboardLayout from "@/components/DashboardLayout";
 import WorkspaceGuard from "@/components/WorkspaceGuard";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
-import { 
-  DndContext, 
-  DragEndEvent, 
-  DragOverlay, 
-  DragStartEvent, 
-  PointerSensor, 
-  useSensor, 
+import {
+  DndContext,
+  DragEndEvent,
+  DragOverlay,
+  DragStartEvent,
+  PointerSensor,
+  useSensor,
   useSensors,
   useDroppable,
   closestCenter,
@@ -69,18 +69,20 @@ const DEFAULT_COLUMNS: KanbanColumn[] = [
   { id: "collaborators_fixed", title: "Colaboradores", color: "bg-emerald-600" },
 ];
 
-function ContactCard({ 
-  contact, 
-  onClick, 
+function ContactCard({
+  contact,
+  onClick,
   onArchive,
   columns,
-  onMoveContact
-}: { 
-  contact: Contact; 
-  onClick?: () => void; 
+  onMoveContact,
+  handleImagePreview
+}: {
+  contact: Contact;
+  onClick?: () => void;
   onArchive?: () => void;
   columns?: KanbanColumn[];
   onMoveContact?: (contactId: number, status: string) => void;
+  handleImagePreview?: (url: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `contact-${contact.id}`,
@@ -105,10 +107,10 @@ function ContactCard({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div 
-          ref={setNodeRef} 
-          style={style} 
-          {...attributes} 
+        <div
+          ref={setNodeRef}
+          style={style}
+          {...attributes}
           {...listeners}
           onClick={(e) => {
             // Só chama onClick se não estiver arrastando
@@ -126,7 +128,13 @@ function ContactCard({
                 <img
                   src={contact.profilePicUrl}
                   alt={contact.name || "Contato"}
-                  className="w-10 h-10 rounded-full object-cover"
+                  className="w-10 h-10 rounded-full object-cover cursor-zoom-in hover:brightness-110"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (handleImagePreview && contact.profilePicUrl) {
+                      handleImagePreview(contact.profilePicUrl);
+                    }
+                  }}
                 />
               ) : (
                 <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
@@ -187,22 +195,24 @@ function ContactCard({
   );
 }
 
-function DroppableColumn({ 
-  column, 
+function DroppableColumn({
+  column,
   contacts,
   onContactClick,
   onArchiveContact,
   allColumns,
   onMoveContact,
   onDeleteSellerColumn,
-}: { 
-  column: KanbanColumn; 
+  handleImagePreview
+}: {
+  column: KanbanColumn;
   contacts: Contact[];
   onContactClick: (contact: Contact) => void;
   onArchiveContact: (contact: Contact) => void;
   allColumns: KanbanColumn[];
   onMoveContact: (contactId: number, status: string) => void;
   onDeleteSellerColumn?: (columnId: string) => void;
+  handleImagePreview: (url: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: column.id,
@@ -213,11 +223,10 @@ function DroppableColumn({
   });
 
   return (
-    <Card 
-      ref={setNodeRef} 
-      className={`flex flex-col h-[calc(100vh-250px)] transition-all ${
-        isOver ? "ring-2 ring-primary bg-primary/5" : ""
-      }`}
+    <Card
+      ref={setNodeRef}
+      className={`flex flex-col h-[calc(100vh-250px)] transition-all ${isOver ? "ring-2 ring-primary bg-primary/5" : ""
+        }`}
     >
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-2">
@@ -254,6 +263,7 @@ function DroppableColumn({
                 onArchive={() => onArchiveContact(contact)}
                 columns={allColumns}
                 onMoveContact={onMoveContact}
+                handleImagePreview={handleImagePreview}
               />
             ))
           ) : (
@@ -293,6 +303,19 @@ export default function Kanban() {
   const renameContactMutation = trpc.contacts.rename.useMutation();
   const markAsReadMutation = trpc.contacts.markAsRead.useMutation();
   const archiveContactMutation = trpc.contacts.archive.useMutation();
+  const resolveLidsMutation = trpc.contacts.resolveLids.useMutation();
+
+  const handleSyncLids = async () => {
+    try {
+      const result = await resolveLidsMutation.mutateAsync();
+      toast.success(`Sincronização concluída! ${result.correctedCount} contatos corrigidos.`);
+      refetch();
+    } catch (error) {
+      console.error(error);
+      toast.error("Erro ao sincronizar contatos");
+    }
+  };
+
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
@@ -429,10 +452,10 @@ export default function Kanban() {
       setNewConversationOpen(false);
       setNewConversationNumber("");
       setNewConversationName("");
-      
+
       // Atualizar lista de contatos
       const { data: updatedContacts } = await refetch();
-      
+
       // Buscar o contato atualizado na lista ou usar o retornado
       const newContact = updatedContacts?.find(c => c.id === result.contactId) || result.contact;
       if (newContact) {
@@ -470,10 +493,10 @@ export default function Kanban() {
 
     // Extrair ID do contato
     const contactId = parseInt(active.id.toString().replace('contact-', ''));
-    
+
     // O over.id pode ser o ID da coluna ou de outro card
     let newStatus = over.id.toString();
-    
+
     // Se dropou em outro card, pegar a coluna desse card
     if (newStatus.startsWith('contact-')) {
       const overContactId = parseInt(newStatus.replace('contact-', ''));
@@ -552,6 +575,14 @@ export default function Kanban() {
               <Button variant="outline" onClick={() => setAutoRefresh((prev) => !prev)}>
                 {autoRefresh ? "Pausar auto refresh" : "Ativar auto refresh"}
               </Button>
+              <Button
+                variant="outline"
+                onClick={handleSyncLids}
+                disabled={resolveLidsMutation.isPending}
+              >
+                <Maximize2 className={`w-4 h-4 mr-2 ${resolveLidsMutation.isPending ? "animate-spin" : ""}`} />
+                {resolveLidsMutation.isPending ? "Sincronizando..." : "Sincronizar"}
+              </Button>
               <Button onClick={() => setNewConversationOpen(true)} variant="default">
                 <MessageSquarePlus className="w-4 h-4 mr-2" />
                 Nova Conversa
@@ -563,10 +594,10 @@ export default function Kanban() {
             </div>
           </div>
 
-          <DndContext 
-            sensors={sensors} 
+          <DndContext
+            sensors={sensors}
             collisionDetection={closestCenter}
-            onDragStart={handleDragStart} 
+            onDragStart={handleDragStart}
             onDragOver={handleDragOver}
             onDragEnd={handleDragEnd}
           >
@@ -594,6 +625,7 @@ export default function Kanban() {
                       onDeleteSellerColumn={
                         column.isSeller ? () => handleDeleteSellerColumn(column.id) : undefined
                       }
+                      handleImagePreview={setPreviewImageUrl}
                     />
                   </div>
                 );
@@ -675,7 +707,7 @@ export default function Kanban() {
             </div>
 
             {/* Mensagens */}
-            <ChatPanel contactId={selectedContact.id} />
+            <ChatPanel contactId={selectedContact.id} handleImagePreview={setPreviewImageUrl} />
           </div>
         )}
 
@@ -734,13 +766,38 @@ export default function Kanban() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Modal de visualização de imagem */}
+        <Dialog open={!!previewImageUrl} onOpenChange={(open) => !open && setPreviewImageUrl(null)}>
+          <DialogContent className="max-w-4xl bg-transparent border-none shadow-none p-0 flex justify-center items-center focus:outline-none">
+            <DialogTitle className="sr-only">Visualização de Imagem</DialogTitle>
+            {previewImageUrl && (
+              <div className="space-y-3 relative">
+                <img
+                  src={previewImageUrl}
+                  alt="Visualização"
+                  className="max-h-[85vh] w-auto rounded-md shadow-2xl"
+                />
+                <a
+                  href={previewImageUrl}
+                  download
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="absolute bottom-4 right-4 text-white bg-black/50 px-3 py-1 rounded hover:bg-black/70 text-sm"
+                >
+                  Baixar Original
+                </a>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       </DashboardLayout>
     </WorkspaceGuard>
   );
 }
 
 // Componente de Chat
-function ChatPanel({ contactId }: { contactId: number }) {
+function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handleImagePreview: (url: string) => void }) {
   const [message, setMessage] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
@@ -756,8 +813,8 @@ function ChatPanel({ contactId }: { contactId: number }) {
   const isUserScrollingRef = useRef(false);
   const wasAtBottomRef = useRef(true);
   const previousMessagesLengthRef = useRef(0);
-  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
-  
+
+
   const { data: conversations } = trpc.conversations.list.useQuery();
   const conversation = conversations?.find(c => c.contactId === contactId);
   const { data: messages, refetch } = trpc.messages.list.useQuery(
@@ -780,11 +837,11 @@ function ChatPanel({ contactId }: { contactId: number }) {
   const checkIfAtBottom = () => {
     const container = messagesContainerRef.current;
     if (!container) return false;
-    
+
     const threshold = 100; // Margem de erro de 100px
-    const isAtBottom = 
+    const isAtBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
-    
+
     wasAtBottomRef.current = isAtBottom;
     return isAtBottom;
   };
@@ -814,11 +871,11 @@ function ChatPanel({ contactId }: { contactId: number }) {
     if (!container) return;
 
     let scrollTimeout: NodeJS.Timeout;
-    
+
     const handleScroll = () => {
       isUserScrollingRef.current = true;
       checkIfAtBottom();
-      
+
       // Resetar flag após 1 segundo sem scroll
       clearTimeout(scrollTimeout);
       scrollTimeout = setTimeout(() => {
@@ -827,10 +884,10 @@ function ChatPanel({ contactId }: { contactId: number }) {
     };
 
     container.addEventListener('scroll', handleScroll);
-    
+
     // Verificar posição inicial
     checkIfAtBottom();
-    
+
     return () => {
       container.removeEventListener('scroll', handleScroll);
       clearTimeout(scrollTimeout);
@@ -874,41 +931,41 @@ function ChatPanel({ contactId }: { contactId: number }) {
       try {
         console.log("[Audio] Criando nova instância FFmpeg...");
         const instance = new FFmpeg();
-        
+
         console.log("[Audio] Preparando URLs dos arquivos WASM...");
         const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
-        
+
         console.log("[Audio] Convertendo ffmpeg-core.js para blob URL...");
         const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
         console.log("[Audio] ffmpeg-core.js convertido:", coreURL.substring(0, 50) + "...");
-        
+
         console.log("[Audio] Convertendo ffmpeg-core.wasm para blob URL...");
         const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
         console.log("[Audio] ffmpeg-core.wasm convertido:", wasmURL.substring(0, 50) + "...");
-        
+
         console.log("[Audio] Carregando FFmpeg WASM (isso pode levar alguns segundos)...");
         const loadStartTime = Date.now();
-        
+
         // Timeout de 60 segundos para o carregamento
         const loadTimeout = new Promise((_, reject) => {
           setTimeout(() => reject(new Error("Timeout: carregamento do FFmpeg demorou mais de 60 segundos")), 60000);
         });
-        
+
         await Promise.race([
           instance.load({ coreURL, wasmURL }),
           loadTimeout
         ]);
-        
+
         const loadDuration = Date.now() - loadStartTime;
         console.log(`[Audio] FFmpeg WASM carregado com sucesso em ${loadDuration}ms`);
-        
+
         ffmpegRef.current = instance;
         return instance;
       } catch (error: any) {
         console.error("[Audio] Falha ao carregar FFmpeg WASM:", error);
         console.error("[Audio] Erro detalhado:", error.message);
         console.error("[Audio] Stack:", error.stack);
-        
+
         const errorMessage = error?.message || "Erro desconhecido";
         if (errorMessage.includes("Timeout")) {
           toast.error("Carregamento do conversor demorou muito. Verifique sua conexão e tente novamente.");
@@ -1017,7 +1074,7 @@ function ChatPanel({ contactId }: { contactId: number }) {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
+
       // Verificar formatos suportados e priorizar OGG (compatível com WhatsApp)
       const supportedFormats = [
         { mime: "audio/ogg; codecs=opus", ext: "ogg", name: "OGG Opus" },
@@ -1025,54 +1082,54 @@ function ChatPanel({ contactId }: { contactId: number }) {
         { mime: "audio/webm", ext: "webm", name: "WebM" },
         { mime: "audio/mp4", ext: "m4a", name: "MP4" },
       ];
-      
+
       let selectedFormat = supportedFormats.find(f => MediaRecorder.isTypeSupported(f.mime));
-      
+
       if (!selectedFormat) {
         // Fallback: usar o formato padrão do navegador
         selectedFormat = { mime: "", ext: "webm", name: "WebM (padrão)" };
       }
-      
+
       console.log(`[Audio] Formatos suportados:`, supportedFormats.map(f => ({
         format: f.name,
         supported: MediaRecorder.isTypeSupported(f.mime)
       })));
       console.log(`[Audio] Usando formato: ${selectedFormat.name} (${selectedFormat.mime})`);
-      
+
       const options: MediaRecorderOptions = {};
       if (selectedFormat.mime) {
         options.mimeType = selectedFormat.mime;
       }
-      
+
       const recorder = new MediaRecorder(stream, options);
       audioChunksRef.current = [];
-      
+
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
           audioChunksRef.current.push(e.data);
         }
       };
-      
+
       recorder.onstop = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: selectedFormat.mime || "audio/webm" });
-        
+
         // Criar arquivo imediatamente sem conversão (não travar a UI)
-        const file = new File([audioBlob], `audio-${Date.now()}.${selectedFormat.ext}`, { 
-          type: selectedFormat.mime || "audio/webm" 
+        const file = new File([audioBlob], `audio-${Date.now()}.${selectedFormat.ext}`, {
+          type: selectedFormat.mime || "audio/webm"
         });
         setSelectedFile(file);
         setFilePreview(URL.createObjectURL(file));
         setIsRecording(false);
         stream.getTracks().forEach(track => track.stop());
-        
+
         // Registrar no log o formato gravado (sem exibir toast para não cobrir os botões)
         console.log(`[Audio] Áudio gravado em ${selectedFormat.name} (${selectedFormat.mime || "padrão"})`);
       };
-      
+
       recorder.start();
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
-      
+
       // Mostrar no log qual formato está sendo usado (sem toast para não atrapalhar UI)
       console.log(`[Audio] Gravando em ${selectedFormat.name}...`);
     } catch (error) {
@@ -1101,12 +1158,12 @@ function ChatPanel({ contactId }: { contactId: number }) {
       if (selectedFile) {
         let fileToUpload = selectedFile;
         let finalMediaType = mediaType; // Variável para controlar o tipo final
-        
+
         // Detectar se é WebM (por tipo MIME ou extensão)
-        const isWebM = selectedFile.type.includes('webm') || 
-                       selectedFile.name.toLowerCase().endsWith('.webm') ||
-                       selectedFile.name.toLowerCase().includes('webm');
-        
+        const isWebM = selectedFile.type.includes('webm') ||
+          selectedFile.name.toLowerCase().endsWith('.webm') ||
+          selectedFile.name.toLowerCase().includes('webm');
+
         // Se for áudio WebM, converter para OGG (compatível com WhatsApp)
         if (selectedFile.type.includes('audio') && isWebM) {
           console.log("[Audio] Detectado WebM, iniciando conversão...", {
@@ -1114,19 +1171,19 @@ function ChatPanel({ contactId }: { contactId: number }) {
             fileType: selectedFile.type,
             fileSize: selectedFile.size
           });
-          
+
           if (isFFmpegLoading) {
             toast.info("Carregando conversor de áudio (FFmpeg WASM ~7MB, primeira vez pode demorar)...");
           } else {
             toast.info("Convertendo áudio WebM para OGG (pode levar 10-30 segundos)...");
           }
-          
+
           try {
             const convertedBlob = await convertWebMToOGG(selectedFile);
-            
+
             if (convertedBlob && convertedBlob.size > 0) {
-              fileToUpload = new File([convertedBlob], selectedFile.name.replace(/\.webm$/i, '.ogg'), { 
-                type: 'audio/ogg' 
+              fileToUpload = new File([convertedBlob], selectedFile.name.replace(/\.webm$/i, '.ogg'), {
+                type: 'audio/ogg'
               });
               finalMediaType = "audio"; // Enviar como áudio OGG
               toast.success("Áudio convertido para OGG com sucesso!");
@@ -1145,7 +1202,7 @@ function ChatPanel({ contactId }: { contactId: number }) {
           } catch (error: any) {
             console.error("[Audio] Erro na conversão:", error);
             console.error("[Audio] Stack:", error?.stack);
-            
+
             const errorMessage = error?.message || "Erro desconhecido";
             if (errorMessage.includes("Timeout")) {
               toast.error("Conversão demorou muito. O arquivo pode ser muito grande. Tente gravar um áudio mais curto.");
@@ -1159,13 +1216,13 @@ function ChatPanel({ contactId }: { contactId: number }) {
           console.log("[Audio] Formato de áudio não-WebM detectado:", selectedFile.type);
           finalMediaType = "audio";
         }
-        
+
         // Usar o tipo final determinado acima
         mediaType = finalMediaType;
-        
+
         const reader = new FileReader();
         reader.readAsDataURL(fileToUpload);
-        
+
         await new Promise<void>((resolve, reject) => {
           reader.onloadend = async () => {
             try {
@@ -1176,7 +1233,7 @@ function ChatPanel({ contactId }: { contactId: number }) {
                 fileSize: fileToUpload.size,
                 fileData: base64Data,
               });
-              
+
               mediaUrl = uploadResult.mediaUrl;
               // IMPORTANTE: Preservar o mediaType escolhido (document para áudios)
               // Se foi definido como "document", manter como "document"
@@ -1202,15 +1259,15 @@ function ChatPanel({ contactId }: { contactId: number }) {
         content: caption || undefined,
         caption: caption || undefined,
       };
-      
+
       // Só adicionar mídia se houver arquivo
       if (mediaUrl && mediaType) {
         messagePayload.mediaUrl = mediaUrl;
         messagePayload.mediaType = mediaType;
       }
-      
+
       await sendMessage.mutateAsync(messagePayload);
-      
+
       setMessage("");
       removeFile();
       refetch();
@@ -1236,16 +1293,14 @@ function ChatPanel({ contactId }: { contactId: number }) {
             messages.map((msg) => (
               <div
                 key={msg.id}
-                className={`flex ${
-                  msg.senderType === "contact" ? "justify-start" : "justify-end"
-                }`}
+                className={`flex ${msg.senderType === "contact" ? "justify-start" : "justify-end"
+                  }`}
               >
                 <div
-                  className={`max-w-[80%] rounded-lg p-3 group relative ${
-                    msg.senderType === "contact"
-                      ? "bg-muted"
-                      : "bg-primary text-primary-foreground"
-                  }`}
+                  className={`max-w-[80%] rounded-lg p-3 group relative ${msg.senderType === "contact"
+                    ? "bg-muted"
+                    : "bg-primary text-primary-foreground"
+                    }`}
                 >
                   {msg.senderType === "agent" && (
                     <button
@@ -1263,11 +1318,11 @@ function ChatPanel({ contactId }: { contactId: number }) {
                   {/* Exibir mídia se houver */}
                   {msg.mediaUrl && msg.messageType === "image" && (
                     <div className="mb-2 space-y-1">
-                      <img 
-                        src={msg.mediaUrl} 
-                        alt="Imagem" 
-                        className="max-w-full h-auto rounded-md max-h-64 object-cover cursor-zoom-in" 
-                        onClick={() => setPreviewImageUrl(msg.mediaUrl!)}
+                      <img
+                        src={msg.mediaUrl}
+                        alt="Imagem"
+                        className="max-w-full h-auto rounded-md max-h-64 object-cover cursor-zoom-in"
+                        onClick={() => handleImagePreview(msg.mediaUrl!)}
                       />
                       <a
                         href={msg.mediaUrl}
@@ -1281,40 +1336,40 @@ function ChatPanel({ contactId }: { contactId: number }) {
                     </div>
                   )}
                   {msg.mediaUrl && msg.messageType === "audio" && (
-                    <audio 
-                      controls 
-                      src={msg.mediaUrl} 
+                    <audio
+                      controls
+                      src={msg.mediaUrl}
                       className="w-full mb-2"
                       style={{ maxWidth: "300px" }}
                     />
                   )}
                   {msg.mediaUrl && msg.messageType === "video" && (
-                    <video 
-                      controls 
-                      src={msg.mediaUrl} 
+                    <video
+                      controls
+                      src={msg.mediaUrl}
                       className="max-w-full h-auto rounded-md mb-2 max-h-64"
                     />
                   )}
                   {msg.mediaUrl && msg.messageType === "document" && (
                     <div className="mb-2 flex items-center gap-2">
                       <Paperclip className="w-4 h-4" />
-                      <a 
-                        href={msg.mediaUrl} 
-                        target="_blank" 
-                        rel="noopener noreferrer" 
+                      <a
+                        href={msg.mediaUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="underline hover:opacity-80"
                       >
                         {msg.content || "Documento"}
                       </a>
                     </div>
                   )}
-                  
+
                   {/* Exibir texto se houver (e não for apenas placeholder de mídia) */}
-                  {msg.content && 
-                   !(msg.mediaUrl && (msg.content === "[audio]" || msg.content === "[image]" || msg.content === "[video]" || msg.content === "[document]")) && (
-                    <p className="text-sm">{msg.content}</p>
-                  )}
-                  
+                  {msg.content &&
+                    !(msg.mediaUrl && (msg.content === "[audio]" || msg.content === "[image]" || msg.content === "[video]" || msg.content === "[document]")) && (
+                      <p className="text-sm">{msg.content}</p>
+                    )}
+
                   <p className="text-xs opacity-70 mt-1">
                     {new Date(msg.sentAt).toLocaleTimeString("pt-BR", {
                       hour: "2-digit",
@@ -1354,7 +1409,7 @@ function ChatPanel({ contactId }: { contactId: number }) {
             </Button>
           </div>
         )}
-        
+
         <div className="flex gap-2">
           <Input
             placeholder="Digite sua mensagem..."
@@ -1375,9 +1430,9 @@ function ChatPanel({ contactId }: { contactId: number }) {
             onChange={handleFileChange}
             accept="image/*,audio/*,video/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
           />
-          <Button 
-            size="icon" 
-            variant="outline" 
+          <Button
+            size="icon"
+            variant="outline"
             onClick={() => fileInputRef.current?.click()}
             disabled={isRecording}
           >
@@ -1388,18 +1443,18 @@ function ChatPanel({ contactId }: { contactId: number }) {
               <StopCircle className="w-4 h-4" />
             </Button>
           ) : (
-            <Button 
-              size="icon" 
-              variant="outline" 
+            <Button
+              size="icon"
+              variant="outline"
               onClick={startRecording}
               disabled={selectedFile !== null}
             >
               <Mic className="w-4 h-4" />
             </Button>
           )}
-          <Button 
-            size="icon" 
-            onClick={handleSend} 
+          <Button
+            size="icon"
+            onClick={handleSend}
             disabled={(!message.trim() && !selectedFile) || isRecording}
           >
             <Send className="w-4 h-4" />
@@ -1407,30 +1462,7 @@ function ChatPanel({ contactId }: { contactId: number }) {
         </div>
       </div>
 
-      {/* Modal de visualização de imagem */}
-      <Dialog open={!!previewImageUrl} onOpenChange={(open) => !open && setPreviewImageUrl(null)}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>Imagem</DialogTitle>
-          </DialogHeader>
-          {previewImageUrl ? (
-            <div className="space-y-3">
-              <img src={previewImageUrl} alt="Imagem" className="w-full h-auto rounded-md" />
-              <div className="text-right">
-                <a
-                  href={previewImageUrl}
-                  download
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline text-sm"
-                >
-                  Baixar
-                </a>
-              </div>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
+
     </>
   );
 }

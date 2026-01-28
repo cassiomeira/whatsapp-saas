@@ -6,8 +6,8 @@ import { processarFluxoRobotizado } from "./automatedFlowHelper";
 import { detectarPedidoAtendente, detectarIndecisaoOuSemFechamento, gerarMensagemTransferencia, enriquecerPromptComAtendimento } from "./humanAttendantHelper";
 import type { Product } from "../drizzle/schema";
 
-const SEARCH_RESULTS_PER_VARIANT = 20;
-const MAX_UNIQUE_PRODUCTS = 40;
+const SEARCH_RESULTS_PER_VARIANT = 1000;
+const MAX_UNIQUE_PRODUCTS = 2000;
 const PRODUCTS_TO_PRESENT = 20;
 const SAO_PAULO_TIMEZONE = "America/Sao_Paulo";
 const WEEKDAY_OPERATING_MINUTES = {
@@ -134,6 +134,15 @@ const KEYWORD_SYNONYMS: Record<string, string[]> = {
     "antiinflamatorio",
     "antiinflamatorios",
   ],
+  colchao: [
+    "colchao",
+    "colchão",
+    "colc",
+    "colchoes",
+    "colchões",
+    "cama",
+    "box",
+  ],
 };
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -208,8 +217,14 @@ function isWithinBusinessHours(date = new Date()) {
 
 function generateKeywordVariants(token: string): string[] {
   const variants = new Set<string>();
-  const base = normalizeToken(token.toLowerCase());
+  const lower = token.toLowerCase();
+  const base = normalizeToken(lower);
   variants.add(base);
+
+  // Se a versão normalizada perdeu acentos, adicionar também a versão com acentos
+  if (base !== lower) {
+    variants.add(lower);
+  }
 
   if (base.endsWith("s") && base.length > 3) {
     variants.add(base.slice(0, -1));
@@ -221,6 +236,14 @@ function generateKeywordVariants(token: string): string[] {
 
   if (base.length > 4) {
     variants.add(base.slice(0, 4));
+  }
+
+  // Verificar sinônimos manuais
+  for (const [key, synonyms] of Object.entries(KEYWORD_SYNONYMS)) {
+    // Se o token for a chave ou estiver na lista de sinônimos
+    if (base === key || synonyms.includes(base) || synonyms.includes(token)) {
+      synonyms.forEach(s => variants.add(s));
+    }
   }
 
   return Array.from(variants);
@@ -287,10 +310,10 @@ async function analyzeImageForProductHints(imageUrl: string): Promise<{
         : rawContent.trim();
     const keywords = Array.isArray(parsed.keywords)
       ? parsed.keywords
-          .map((item: unknown) =>
-            typeof item === "string" ? item.trim() : ""
-          )
-          .filter(item => item.length > 0)
+        .map((item: unknown) =>
+          typeof item === "string" ? item.trim() : ""
+        )
+        .filter(item => item.length > 0)
       : [];
 
     return {
@@ -317,33 +340,33 @@ export async function generateBotResponse(
   try {
     console.log("[AI Service] generateBotResponse chamado para workspace:", workspaceId);
     console.log("[AI Service] isInNegotiating:", isInNegotiating);
-    
+
     // Buscar configuração do bot
     const botConfig = await db.getBotConfigByWorkspace(workspaceId);
     console.log("[AI Service] botConfig:", botConfig ? "encontrado" : "não encontrado", "isActive:", botConfig?.isActive);
-    
+
     if (!botConfig || !botConfig.isActive) {
       console.log("[AI Service] Bot não está ativo ou não tem config");
       const unavilableMessage = "Olá! No momento estou indisponível. Por favor, aguarde que um atendente irá te responder em breve.";
-      
+
       // Se está em negotiating, adicionar aviso
       if (isInNegotiating) {
         return "💬 Você já foi transferido para um atendente humano que logo irá te atender!\n\nEnquanto isso, posso responder suas dúvidas:\n\n" + unavilableMessage;
       }
-      
+
       return unavilableMessage;
     }
 
     // Aviso para quando está em negotiating (já foi transferido)
-    const negotiatingAviso = isInNegotiating 
+    const negotiatingAviso = isInNegotiating
       ? "💬 Você já foi transferido para um atendente humano que logo irá te atender!\n\nEnquanto isso, posso responder suas dúvidas:\n\n"
       : "";
-    
+
     console.log("[AI Service] negotiatingAviso:", negotiatingAviso ? "criado" : "vazio");
 
     // Buscar histórico de mensagens da conversa
     const messages = await db.getMessagesByConversation(conversationId);
-    
+
     // Buscar nome do contato
     const conversations = await db.getConversationsByWorkspace(workspaceId);
     const currentConv = conversations.find(c => c.id === conversationId);
@@ -370,7 +393,33 @@ export async function generateBotResponse(
     if (wantsAlternativeTransfer) {
       return transferToAttendantMessage;
     }
-    const baseKeywords = extractProductKeywords(userMessage);
+    let baseKeywords = extractProductKeywords(userMessage);
+
+    // Se não encontrou palavras-chave na mensagem atual (ex: "tem desse?"), 
+    // olhar o histórico recente para recuperar o contexto (ex: bot descreveu uma imagem)
+    if (baseKeywords.length === 0) {
+      console.log("[AI Service] Nenhuma keyword na mensagem atual. Buscando contexto no histórico...");
+      const recentBotMessages = messages
+        .filter(m => m.senderType === "bot")
+        .slice(-3) // Olhar as últimas 3 mensagens do bot
+        .reverse();
+
+      for (const msg of recentBotMessages) {
+        if (!msg.content) continue;
+
+        // Se o bot descreveu uma imagem recentemente, usar essa descrição
+        // Padrão comum: "vi que você enviou uma imagem de um [PRODUTO]"
+        if (msg.content.includes("imagem de um") || msg.content.includes("enviou uma imagem")) {
+          const contextKeywords = extractProductKeywords(msg.content);
+          console.log(`[AI Service] Keywords recuperadas do histórico (${msg.id}):`, contextKeywords);
+          if (contextKeywords.length > 0) {
+            baseKeywords = contextKeywords;
+            break; // Achou contexto, para
+          }
+        }
+      }
+    }
+
     const additionalKeywords = Array.from(
       new Set(
         imageKeywordHints
@@ -480,32 +529,33 @@ export async function generateBotResponse(
 
     const sortedProductsRaw = scoredProducts.length > 0
       ? scoredProducts
-          .sort((a, b) => {
-            if (b.score !== a.score) {
-              return b.score - a.score;
-            }
-            const priceA = a.product.price ?? Number.MAX_SAFE_INTEGER;
-            const priceB = b.product.price ?? Number.MAX_SAFE_INTEGER;
-            if (priceA !== priceB) {
-              return priceA - priceB;
-            }
-            return (a.product.name ?? "").localeCompare(b.product.name ?? "");
-          })
-          .map(entry => entry.product)
-      : [...productMatches].sort((a, b) => {
-          const priceA = a.price ?? Number.MAX_SAFE_INTEGER;
-          const priceB = b.price ?? Number.MAX_SAFE_INTEGER;
+        .sort((a, b) => {
+          if (b.score !== a.score) {
+            return b.score - a.score;
+          }
+          const priceA = a.product.price ?? Number.MAX_SAFE_INTEGER;
+          const priceB = b.product.price ?? Number.MAX_SAFE_INTEGER;
           if (priceA !== priceB) {
             return priceA - priceB;
           }
-          return (a.name ?? "").localeCompare(b.name ?? "");
-        });
+          return (a.product.name ?? "").localeCompare(b.product.name ?? "");
+        })
+        .map(entry => entry.product)
+      : [...productMatches].sort((a, b) => {
+        const priceA = a.price ?? Number.MAX_SAFE_INTEGER;
+        const priceB = b.price ?? Number.MAX_SAFE_INTEGER;
+        if (priceA !== priceB) {
+          return priceA - priceB;
+        }
+        return (a.name ?? "").localeCompare(b.name ?? "");
+      });
 
     const sortedProducts = sortedProductsRaw;
 
-    if (keywords.length > 0 && sortedProducts.length === 0 && productInquiryKeywords.test(userMessage)) {
-      return transferToAttendantMessage;
-    }
+    // Transfer logic for zero search results removed to allow LLM to handle generic inquiries.
+    // if (keywords.length > 0 && sortedProducts.length === 0 && productInquiryKeywords.test(userMessage)) {
+    //   return transferToAttendantMessage;
+    // }
 
     // Verificar se o cliente pediu para ver mais opções
     const wantsMoreProducts = /\bmais\b|outr[ao]s?|outros|mostrar mais|ver mais/.test(normalizedMessage);
@@ -558,17 +608,17 @@ export async function generateBotResponse(
       role: "user",
       content: userMessage,
     };
-    
+
     // Enriquecer prompt com contexto IXC e atendimento humano
     let systemPrompt = botConfig.masterPrompt || "Você é um assistente de atendimento profissional e prestativo.";
     systemPrompt = enriquecerPromptComIXC(systemPrompt);
     systemPrompt = enriquecerPromptComAtendimento(systemPrompt);
-    
+
     // Adicionar nome do cliente ao prompt
     if (nomeCliente) {
       systemPrompt += `\n\n🎯 IMPORTANTE - PERSONALIZAÇÃO:\nO nome do cliente é *${nomeCliente}*. SEMPRE use o nome dele nas suas respostas para criar uma experiência mais humanizada e pessoal. Por exemplo: "Olá ${nomeCliente}!", "Entendi ${nomeCliente}!", "${nomeCliente}, posso te ajudar com...", etc.\n\nUsar o nome do cliente demonstra atenção e cuidado, tornando o atendimento mais caloroso e profissional.`;
     }
-    
+
     systemPrompt += `
 Regras de catálogo:
 - Sempre que apresentar um produto, informe o preço exatamente como fornecido na lista e destaque que o item está disponível para pronta entrega.
@@ -595,20 +645,19 @@ Regras de catálogo:
     }
 
     const productContextMessage = productsToShare.length > 0
-      ? `Produtos encontrados no catálogo (priorizados pelos mais relevantes para o pedido e, em caso de empate, do menor para o maior preço). Liste TODAS as opções abaixo exatamente na ordem apresentada, sem omitir nenhuma e sem dizer que são apenas algumas. Se houver menos de ${PRODUCTS_TO_PRESENT} itens nesta lista, informe que são as opções disponíveis para esta etapa. Ao final, pergunte explicitamente se o cliente deseja ver mais opções adicionais${
-          hasMoreProducts
-            ? ". Caso ele queira, diga que você pode mostrar mais itens ou acionar um atendente humano."
-            : ". Caso não haja mais itens, informe que essas são todas as opções encontradas."
-        }\n${productsToShare
-          .map((prod, index) => {
-            const preco = prod.price != null
-              ? (prod.price / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-              : "preço indisponível";
-            const descricao = prod.description ? `\n   • Descrição: ${prod.description}` : "";
-            const nome = prod.name ?? "Produto sem nome";
-            return `${startIndex + index + 1}. ${nome}\n   • Preço: ${preco}${descricao}`;
-          })
-          .join("\n\n")}`
+      ? `Produtos encontrados no catálogo (priorizados pelos mais relevantes para o pedido e, em caso de empate, do menor para o maior preço). Liste TODAS as opções abaixo exatamente na ordem apresentada, sem omitir nenhuma e sem dizer que são apenas algumas. Se houver menos de ${PRODUCTS_TO_PRESENT} itens nesta lista, informe que são as opções disponíveis para esta etapa. Ao final, pergunte explicitamente se o cliente deseja ver mais opções adicionais${hasMoreProducts
+        ? ". Caso ele queira, diga que você pode mostrar mais itens ou acionar um atendente humano."
+        : ". Caso não haja mais itens, informe que essas são todas as opções encontradas."
+      }\n${productsToShare
+        .map((prod, index) => {
+          const preco = prod.price != null
+            ? (prod.price / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+            : "preço indisponível";
+          const descricao = prod.description ? `\n   • Descrição: ${prod.description}` : "";
+          const nome = prod.name ?? "Produto sem nome";
+          return `${startIndex + index + 1}. ${nome}\n   • Preço: ${preco}${descricao}`;
+        })
+        .join("\n\n")}`
       : "Nenhum produto relacionado foi recuperado do catálogo.";
 
     console.log("[AI Service] Chamando invokeLLM com", conversationHistory.length + 3, "mensagens");
@@ -629,8 +678,8 @@ Regras de catálogo:
     });
     console.log("[AI Service] LLM respondeu com sucesso");
 
-    let botResponse = typeof response.choices[0]?.message?.content === "string" 
-      ? response.choices[0].message.content 
+    let botResponse = typeof response.choices[0]?.message?.content === "string"
+      ? response.choices[0].message.content
       : "Desculpe, não consegui processar sua mensagem.";
 
     const botResponseNormalized = normalizeToken(botResponse.toLowerCase());
@@ -653,7 +702,7 @@ Regras de catálogo:
       console.log("[AI Service] IA perguntou sobre transferência - removendo pergunta e transferindo automaticamente");
       botResponse = transferToAttendantMessage;
     }
-    
+
     // Adicionar aviso de negotiating no início da resposta se estiver em negotiating
     // IMPORTANTE: Fazer isso DEPOIS de processar transferências para garantir que o aviso seja sempre adicionado
     if (isInNegotiating && negotiatingAviso) {
@@ -675,13 +724,13 @@ Regras de catálogo:
     console.error("[AI Service] Error message:", error?.message);
     console.error("[AI Service] Error stack:", error?.stack);
     console.error("[AI Service] isInNegotiating no catch:", isInNegotiating);
-    
+
     // Se está em negotiating, ainda retornar mensagem com aviso
     if (isInNegotiating) {
       const fallbackMessage = "Desculpe, ocorreu um problema ao processar sua mensagem. Por favor, tente novamente ou aguarde o atendente.";
       return "💬 Você já foi transferido para um atendente humano que logo irá te atender!\n\nEnquanto isso, posso responder suas dúvidas:\n\n" + fallbackMessage;
     }
-    
+
     return "Desculpe, ocorreu um erro ao processar sua mensagem. Um atendente irá te ajudar em breve.";
   }
 }
@@ -722,7 +771,7 @@ export async function processIncomingMessage(
   try {
     console.log(`[AI Service] ===== processIncomingMessage INICIADO =====`);
     console.log(`[AI Service] workspaceId: ${workspaceId}, contactId: ${contactId}, messageContent: "${messageContent.substring(0, 100)}"`);
-    
+
     // Buscar ou criar conversa
     let conversation = await db.getConversationsByWorkspace(workspaceId);
     let activeConv = conversation.find(
@@ -750,7 +799,7 @@ export async function processIncomingMessage(
     let processedContent = messageContent;
     let resolvedMediaUrl = mediaUrl;
     let imageKeywordHints: string[] = [];
-    
+
     if (mediaType === "audio") {
       const transcriptionOptions: Parameters<typeof transcribeAudio>[0] = {
         language: "pt",
@@ -843,7 +892,7 @@ export async function processIncomingMessage(
         );
       }
     }
-    
+
     // IMPORTANTE: Salvar mensagem do contato DEPOIS de processar para garantir que todas as mensagens chegam na IA
     // Mas primeiro buscar contato para verificar status
     const contacts = await db.getContactsByWorkspace(workspaceId);
@@ -983,7 +1032,7 @@ export async function processIncomingMessage(
 
     if (activeConv.status === "bot_handling") {
       console.log(`[AI Service] Status é bot_handling - VAI PROCESSAR COM IA`);
-      
+
       // Verificação de horário de atendimento desabilitada para testes
       // const { isOpen } = isWithinBusinessHours();
       // if (!isOpen) {
@@ -1019,19 +1068,19 @@ export async function processIncomingMessage(
         processedContent,
         whatsappNumber
       );
-      
+
       console.log(`[AI Service] Resposta do fluxo robotizado:`, respostaAutomatica ? `"${respostaAutomatica.substring(0, 100)}"` : "null");
-      
+
       if (respostaAutomatica) {
         // Encontrou resposta automática - usar ela e retornar
         console.log(`[AI Service] ✅ Resposta automática encontrada no fluxo robotizado - USANDO ELA`);
         console.log(`[AI Service] Tipo da resposta:`, typeof respostaAutomatica);
         console.log(`[AI Service] Preview da resposta:`, typeof respostaAutomatica === 'string' ? respostaAutomatica.substring(0, 150) : 'não é string');
-        
+
         // Verificar se a resposta contém boletos para enviar
         let botResponse = respostaAutomatica;
         let boletosParaEnviar: Array<{ idFatura: number; pdfBase64: string; nomeArquivo: string }> = [];
-        
+
         try {
           const respostaObj = JSON.parse(respostaAutomatica);
           console.log(`[AI Service] Resposta é JSON válido. Tipo:`, respostaObj.tipo);
@@ -1044,29 +1093,29 @@ export async function processIncomingMessage(
           // Não é JSON, é texto normal
           console.log(`[AI Service] Resposta não é JSON, é texto normal`);
         }
-        
+
         // Se a resposta automática pediu transferência, processar
         if (botResponse.includes("transferir") && botResponse.includes("atendente")) {
           await db.updateContactKanbanStatus(contactId, "negotiating");
         }
-        
+
         // Salvar e enviar resposta automática
         await db.createMessage({
           conversationId: activeConv.id,
           senderType: "bot",
           content: botResponse,
         });
-        
+
         try {
           const { sendTextMessage, sendPDFDocument } = await import("./whatsappService");
           const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
           const instance = instances.find(i => i.id === instanceId);
-          
+
           if (instance && instance.instanceKey) {
             // Enviar mensagem de texto
             await sendTextMessage(instance.instanceKey, destinationNumber, botResponse);
             console.log(`[AI Service] Resposta automática enviada para ${destinationNumber}`);
-            
+
             // Enviar boletos se houver
             if (boletosParaEnviar.length > 0) {
               console.log(`[AI Service] Enviando ${boletosParaEnviar.length} boleto(s)...`);
@@ -1102,10 +1151,10 @@ export async function processIncomingMessage(
         } catch (error) {
           console.error(`[AI Service] Erro ao enviar resposta automática:`, error);
         }
-        
+
         return; // Retornar aqui - não processar mais nada
       }
-      
+
       // Se não encontrou resposta automática, continuar com processamento normal
       // Verificar se bot pediu CPF recentemente e cliente está fornecendo agora
       const messages = await db.getMessagesByConversation(activeConv.id);
@@ -1113,8 +1162,8 @@ export async function processIncomingMessage(
         .filter(m => m.senderType === "bot" && m.createdAt)
         .slice(-3)
         .map(m => m.content?.toLowerCase() || "");
-      
-      const botPediuCPF = recentBotMessages.some(msg => 
+
+      const botPediuCPF = recentBotMessages.some(msg =>
         msg.includes("preciso do cpf") || msg.includes("cpf ou cnpj") || msg.includes("informe seu cpf")
       );
       const recentUserMessages = messages
@@ -1122,7 +1171,7 @@ export async function processIncomingMessage(
         .slice(-5)
         .map(m => m.content?.toLowerCase() || "");
       const historicoPedeAVencer = recentUserMessages.some(msg => solicitouFaturaAVencer(msg));
-      
+
       // Capturar documento já fornecido no histórico para evitar pedir novamente
       const documentoHistorico = (() => {
         const contatoMsgs = messages
@@ -1134,21 +1183,21 @@ export async function processIncomingMessage(
         }
         return null;
       })();
-      
+
       // Detectar intenção IXC
       const intencaoIXC = detectarIntencaoIXC(processedContent);
       console.log(`[AI Service] Intenção IXC detectada:`, intencaoIXC);
       let botResponse: string = ""; // Inicializar com valor padrão
-      
+
       // Se bot pediu CPF e cliente forneceu documento nesta mensagem, processar
       const documentoNaMensagem = detectarDocumento(processedContent);
       if (botPediuCPF && documentoNaMensagem && intencaoIXC.tipo === "nenhuma") {
         // Verificar contexto: se foi pedido para desbloqueio ou consulta
-        const pediuDesbloqueio = recentUserMessages.some(msg => 
+        const pediuDesbloqueio = recentUserMessages.some(msg =>
           msg.includes("liberar") || msg.includes("desbloquear") || msg.includes("desbloqueio") ||
           msg.includes("paguei") || msg.includes("paguei minha conta")
         );
-        
+
         if (pediuDesbloqueio) {
           console.log(`[AI Service] Bot pediu CPF e cliente forneceu: ${documentoNaMensagem}. Processando desbloqueio...`);
           intencaoIXC.tipo = "desbloqueio";
@@ -1161,7 +1210,7 @@ export async function processIncomingMessage(
           intencaoIXC.documento = documentoNaMensagem;
         }
       }
-      
+
       // Se já temos documento no histórico e não foi capturado pela intenção, reutilizar para não ficar pedindo novamente
       if (!intencaoIXC.documento && documentoHistorico) {
         intencaoIXC.documento = documentoHistorico;
@@ -1194,9 +1243,9 @@ export async function processIncomingMessage(
       // 1. Cliente forneceu CPF após ser solicitado (botPediuCPF && documentoNaMensagem)
       // 2. OU intenção muito clara (confiança > 0.8) E já tem documento
       // Caso contrário, deixar a IA responder primeiro
-      
+
       let deveProcessarIXCDireto = false;
-      
+
       if (botPediuCPF && documentoNaMensagem) {
         // Cliente forneceu CPF após ser solicitado - processar diretamente
         deveProcessarIXCDireto = true;
@@ -1205,16 +1254,16 @@ export async function processIncomingMessage(
         // Intenção muito clara E já tem documento - processar diretamente
         deveProcessarIXCDireto = true;
         console.log(`[AI Service] Intenção muito clara (${intencaoIXC.confianca}) com documento. Processando IXC diretamente.`);
-        }
+      }
 
       if (deveProcessarIXCDireto && temConfiguracaoIXC && (intencaoIXC.tipo === "consulta_fatura" || intencaoIXC.tipo === "desbloqueio")) {
         // Processar diretamente com IXC
         if (intencaoIXC.tipo === "consulta_fatura") {
           console.log(`[AI Service] Processando consulta de fatura com IXC (documento: ${intencaoIXC.documento})`);
-        botResponse = await processarConsultaFatura(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id, querFaturaAVencer);
+          botResponse = await processarConsultaFatura(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id, querFaturaAVencer);
         } else if (intencaoIXC.tipo === "desbloqueio") {
           console.log(`[AI Service] Processando desbloqueio com IXC (documento: ${intencaoIXC.documento})`);
-        botResponse = await processarDesbloqueio(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id);
+          botResponse = await processarDesbloqueio(workspaceId, whatsappNumber, intencaoIXC.documento, contactId, activeConv.id);
         }
       } else if (temConfiguracaoIXC && intencaoIXC.tipo === "desbloqueio" && !intencaoIXC.documento && !documentoNaMensagem && !documentoHistorico) {
         // Cliente perguntou sobre bloqueio mas ainda não forneceu documento: pedir CPF/CNPJ
@@ -1222,17 +1271,17 @@ export async function processIncomingMessage(
       } else {
         // REATIVAR IA: Se não processou com IXC, deixar IA responder
         console.log(`[AI Service] Não processou com IXC. Ativando IA para responder...`);
-        
+
         let finalMessage = processedContent;
-        
+
         if (mediaType === "audio") {
           console.log(`[AI Service] Processing audio message. Transcribed text: "${processedContent}"`);
         }
-        
+
         if (resolvedMediaUrl && mediaType === "image") {
           finalMessage = `[O usuário enviou uma imagem. Analise a imagem e responda adequadamente.]\n${processedContent || ""}`;
         }
-        
+
         try {
           console.log(`[AI Service] Chamando generateBotResponse com workspaceId: ${workspaceId}, conversationId: ${activeConv.id}, message: "${finalMessage.substring(0, 50)}"`);
           botResponse = await generateBotResponse(
@@ -1243,17 +1292,17 @@ export async function processIncomingMessage(
             mediaType === "image" ? imageKeywordHints : [],
             contactInNegotiating
           );
-          
+
           console.log(`[AI Service] IA respondeu: "${botResponse.substring(0, 100)}"`);
-          
+
           // Se a IA detectou assunto financeiro, redirecionar para fluxo robotizado
           const botResponseLower = botResponse.toLowerCase();
-          const mencionouFinanceiro = botResponseLower.includes("fatura") || 
-                                      botResponseLower.includes("boleto") ||
-                                      botResponseLower.includes("pagamento") ||
-                                      botResponseLower.includes("débito") ||
-                                      botResponseLower.includes("pagar");
-          
+          const mencionouFinanceiro = botResponseLower.includes("fatura") ||
+            botResponseLower.includes("boleto") ||
+            botResponseLower.includes("pagamento") ||
+            botResponseLower.includes("débito") ||
+            botResponseLower.includes("pagar");
+
           if (mencionouFinanceiro && temConfiguracaoIXC) {
             console.log(`[AI Service] IA mencionou assunto financeiro. Redirecionando para fluxo IXC...`);
             botResponse = "Entendi que você precisa de ajuda com questões financeiras! 💰\n\nPara consultar suas faturas e boletos, preciso do CPF ou CNPJ do titular da conta.\n\nPor favor, informe o CPF ou CNPJ:";
@@ -1265,8 +1314,8 @@ export async function processIncomingMessage(
           botResponse = "Desculpe, ocorreu um erro. Como posso te ajudar?";
         }
       }
-      
-      
+
+
       // Garantir que botResponse sempre tenha um valor antes de usar
       if (!botResponse || botResponse === "") {
         console.log(`[AI Service] ⚠️ botResponse vazio após processamento. Usando mensagem padrão.`);
@@ -1379,24 +1428,24 @@ export async function processIncomingMessage(
       let responseIndicatesTransfer = false;
       let responseIndicatesUnknown = false;
       let deveTransferirPorIndecisao = false;
-      
+
       if (!contactInNegotiating) {
         // Buscar histórico ANTES de verificar transferência na resposta
         const messagesForHistoryCheck = await db.getMessagesByConversation(activeConv.id);
         const botMessagesForCheck = messagesForHistoryCheck.filter(m => m.senderType === "bot");
-        
+
         // Só verificar transferência na resposta se já tiver pelo menos 3 mensagens do bot
         // Isso evita que a primeira resposta já dispare transferência
         if (botMessagesForCheck.length >= 3) {
           // Só verificar transferência se não está em negotiating
           const transferKeywords = ["transferir", "atendente"];
           const containsHumano = botResponseLowerCase.includes("humano");
-          
+
           // Só detectar transferência se NÃO for a mensagem padrão e contiver todas as palavras-chave
-          responseIndicatesTransfer = !isStandardTransferMessage && 
-                                     transferKeywords.every(keyword => botResponseLowerCase.includes(keyword)) && 
-                                     containsHumano;
-          
+          responseIndicatesTransfer = !isStandardTransferMessage &&
+            transferKeywords.every(keyword => botResponseLowerCase.includes(keyword)) &&
+            containsHumano;
+
           console.log(`[AI Service] Verificando resposta da IA para transferência:`, {
             botResponseLength: botResponseLowerCase.length,
             containsTransfer: botResponseLowerCase.includes("transferir"),
@@ -1410,16 +1459,16 @@ export async function processIncomingMessage(
 
         // Detectar se cliente ainda está indeciso na resposta atual
         const indecisaoNaResposta = detectarIndecisaoOuSemFechamento(processedContent);
-        
+
         // Buscar mensagens para verificar histórico (se ainda não foi feito)
         const messagesForIndecisao = await db.getMessagesByConversation(activeConv.id);
         const botMessagesForIndecisao = messagesForIndecisao.filter(m => m.senderType === "bot");
 
         // NÃO transferir em perguntas simples sobre produtos
         // Exigir confiança MUITO alta E múltiplas interações antes de transferir
-        deveTransferirPorIndecisao = indecisaoNaResposta.precisaAtendente && 
-                                        indecisaoNaResposta.confianca > 0.8 && 
-                                        botMessagesForIndecisao.length >= 5; // Pelo menos 5 respostas do bot (já tentou ajudar várias vezes)
+        deveTransferirPorIndecisao = indecisaoNaResposta.precisaAtendente &&
+          indecisaoNaResposta.confianca > 0.8 &&
+          botMessagesForIndecisao.length >= 5; // Pelo menos 5 respostas do bot (já tentou ajudar várias vezes)
       }
 
       const fallbackPhrases = [
@@ -1453,7 +1502,7 @@ export async function processIncomingMessage(
         // Buscar histórico para verificar se deve checar fallback phrases
         const messagesForFallbackCheck = await db.getMessagesByConversation(activeConv.id);
         const botMessagesForFallbackCheck = messagesForFallbackCheck.filter(m => m.senderType === "bot");
-        
+
         // Só verificar frases de fallback se já tiver pelo menos 3 mensagens do bot
         if (botMessagesForFallbackCheck.length >= 3) {
           const botResponseString = botResponse.toLowerCase();
@@ -1475,7 +1524,7 @@ export async function processIncomingMessage(
       const botMessagesForTransfer = messagesForHistoryCheck
         .filter(m => m.senderType === "bot" && m.createdAt && new Date(m.createdAt) >= duasHorasAtrasForTransfer);
       const jaTentouAjudar = botMessagesForTransfer.length >= 5; // Pelo menos 5 tentativas recentes de ajudar
-      
+
       console.log(`[AI Service] Verificando transferência final:`, {
         contactInNegotiating,
         jaTentouAjudar,
@@ -1484,21 +1533,21 @@ export async function processIncomingMessage(
         responseIndicatesUnknown,
         deveTransferirPorIndecisao
       });
-      
+
       if (!contactInNegotiating && jaTentouAjudar && (responseIndicatesTransfer || responseIndicatesUnknown || deveTransferirPorIndecisao)) {
-        const motivoTransfer = responseIndicatesTransfer 
+        const motivoTransfer = responseIndicatesTransfer
           ? "IA indicou transferência"
           : responseIndicatesUnknown
-          ? "IA não conseguiu ajudar"
-          : "Cliente demonstra indecisão após ver produtos";
-        
+            ? "IA não conseguiu ajudar"
+            : "Cliente demonstra indecisão após ver produtos";
+
         console.log(`[AI Service] Transferindo automaticamente para atendente humano - Motivo: ${motivoTransfer}`);
-        
+
         // Remover qualquer pergunta e substituir por transferência direta
         botResponse = gerarMensagemTransferencia(contact?.name || undefined);
 
         console.log(`[AI Service] Bot response indica transferência automática para humano. Atualizando status do contato ${contactId}.`);
-        
+
         // Atualizar status do contato e conversa
         await db.updateContactKanbanStatus(contactId, "negotiating");
         // Manter bot_handling para continuar respondendo (não mudar para pending_human)
@@ -1515,27 +1564,27 @@ export async function processIncomingMessage(
 
       // Enviar resposta via WhatsApp API
       console.log(`[AI Service] Bot response generated for ${destinationNumber}:`, botResponse.substring(0, 100));
-      
+
       try {
         const { sendTextMessage } = await import("./whatsappService");
-        
+
         // Buscar instância para enviar resposta
         const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
         console.log(`[AI Service] Found ${instances.length} instances for workspace ${workspaceId}`);
-        
+
         const instance = instances.find(i => i.id === instanceId);
         console.log(`[AI Service] Looking for instance ${instanceId}:`, {
           found: !!instance,
           instanceKey: instance?.instanceKey || "missing",
         });
-        
+
         if (instance && instance.instanceKey) {
           console.log(`[AI Service] Attempting to send message via WhatsApp:`, {
             instanceKey: instance.instanceKey,
             destinationNumber,
             messageLength: botResponse.length,
           });
-          
+
           await sendTextMessage(instance.instanceKey, destinationNumber, botResponse);
           console.log(`[AI Service] Response sent successfully to ${destinationNumber}`);
         } else {
@@ -1556,3 +1605,41 @@ export async function processIncomingMessage(
   }
 }
 
+/**
+ * Usa o LLM para gerar sinônimos e termos de busca inteligentes (fallback)
+ * quando a busca inicial por palavras-chave exatas falha.
+ */
+async function generateSearchTermsWithLLM(userMessage: string): Promise<string[]> {
+  const prompt = `
+O usuário enviou uma mensagem procurando um produto: "${userMessage}"
+A busca inicial por palavras-chave exatas não retornou nenhum resultado no catálogo.
+
+Sua tarefa é identificar qual produto ele quer e fornecer 5 termos de busca alternativos que poderiam estar no banco de dados.
+Considere:
+1. Sinônimos (ex: "geladeira" -> "refrigerador")
+2. Versões técnicas
+3. Abreviações comuns usadas em cadastros de estoque (ex: "refrig", "maq", "tv", "conj", "kit")
+4. Variações de singular/plural
+
+Responda APENAS uma lista de palavras separadas por vírgula, sem explicações.
+Exemplo de resposta: refrigerador, refrig, freezer, geladeiras, duplex
+`;
+
+  try {
+    const { invokeLLM } = await import("./_core/llm");
+    const response = await invokeLLM(prompt);
+
+    if (!response) return [];
+
+    // Limpar e extrair palavras
+    const terms = response
+      .split(/[,;\n]+/)
+      .map(t => t.trim().toLowerCase())
+      .filter(t => t.length >= 2);
+
+    return Array.from(new Set(terms));
+  } catch (error) {
+    console.error("[AI Service] Error generating smart search terms:", error);
+    return [];
+  }
+}

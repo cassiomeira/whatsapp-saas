@@ -65,6 +65,16 @@ export class EvolutionAPIService {
       console.log(`[Evolution API] Creating instance: ${instanceName}`);
       const response = await this.client.post("/instance/create", payload);
       console.log(`[Evolution API] Instance created successfully: ${instanceName}`);
+
+      // Configurar webhook imediatamente se URL for fornecida
+      if (webhookUrl) {
+        try {
+          await this.setWebhook(instanceName, webhookUrl);
+        } catch (webhookError: any) {
+          console.warn(`[Evolution API] Failed to set webhook during creation: ${webhookError.message}`);
+          // Não falhar a criação se o webhook falhar, mas logar o erro
+        }
+      }
       
       // Na v2.2.3, o QR Code é gerado de forma assíncrona
       // Aguardar mais tempo e tentar buscar várias vezes

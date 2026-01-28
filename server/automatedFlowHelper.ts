@@ -36,37 +36,41 @@ export async function processarFluxoRobotizado(
   const querFaturaAVencer =
     solicitouFaturaAVencer(mensagem) ||
     recentUserMessages.some(msg => solicitouFaturaAVencer(msg));
-  
+
   // Verificar se é primeira mensagem - enviar saudação inicial
   const isFirst = await isFirstMessage(conversationId);
   console.log(`[Automated Flow] É primeira mensagem? ${isFirst}`);
   if (isFirst) {
+    // Buscar nome da empresa
+    const workspace = await db.getWorkspaceById(workspaceId);
+    const companyName = workspace?.name || "nossa empresa";
+
     console.log(`[Automated Flow] Enviando saudação inicial`);
-    return `Olá! 👋 Sou da *NetCar Telecom* e estou aqui para te ajudar no que precisar!\n\nComo posso te ajudar hoje?`;
+    return `Olá! 👋 Sou da *${companyName}* e estou aqui para te ajudar no que precisar!\n\nComo posso te ajudar hoje?`;
   }
-  
+
   // Buscar mensagens do bot para verificar contexto
   const messages = await db.getMessagesByConversation(conversationId);
   const recentBotMessages = messages
     .filter(m => m.senderType === "bot")
     .slice(-5)
     .map(m => m.content?.toLowerCase() || "");
-  
+
   // Verificar se cliente escolheu opção 1 (consultar faturas)
-  const escolheuConsultaFatura = 
-    normalizedContent === "1" || 
+  const escolheuConsultaFatura =
+    normalizedContent === "1" ||
     normalizedContent === "1️⃣" ||
     mensagem === "um" ||
     mensagem.includes("consultar faturas") ||
     mensagem.includes("faturas em aberto") ||
     mensagem.includes("consulta de faturas");
-  
+
   console.log(`[Automated Flow] Escolheu consulta de fatura? ${escolheuConsultaFatura} (mensagem: "${normalizedContent}")`);
-  
+
   if (escolheuConsultaFatura) {
     // Verificar se já tem CPF na mensagem
     const documento = detectarDocumento(messageContent);
-    
+
     if (documento) {
       // Já tem CPF - processar consulta diretamente
       console.log(`[Automated Flow] CPF detectado na mensagem: ${documento}. Processando consulta...`);
@@ -77,40 +81,40 @@ export async function processarFluxoRobotizado(
       return `Para consultar suas faturas em aberto, preciso do CPF ou CNPJ do titular da conta.\n\nPor favor, informe o CPF ou CNPJ:`;
     }
   }
-  
+
   // PRIMEIRO: Verificar se bot perguntou sobre desbloqueio
-  const botPerguntouDesbloqueio = recentBotMessages.some(msg => 
-    msg.includes("deseja realizar o desbloqueio") || 
+  const botPerguntouDesbloqueio = recentBotMessages.some(msg =>
+    msg.includes("deseja realizar o desbloqueio") ||
     msg.includes("desbloqueio de confiança") ||
     msg.includes("digite *sim* para desbloquear")
   );
-  
+
   if (botPerguntouDesbloqueio) {
     const mensagemLower = mensagem.trim().toLowerCase();
-    const confirmouDesbloqueio = 
-      mensagemLower === "sim" || 
+    const confirmouDesbloqueio =
+      mensagemLower === "sim" ||
       mensagemLower === "s" ||
       mensagemLower === "yes" ||
       mensagemLower.includes("quero") ||
       mensagemLower.includes("desejo") ||
       mensagemLower.includes("fazer") ||
       mensagemLower.includes("desbloquear");
-    
-    const negouDesbloqueio = 
-      mensagemLower === "não" || 
+
+    const negouDesbloqueio =
+      mensagemLower === "não" ||
       mensagemLower === "nao" ||
       mensagemLower === "n" ||
       mensagemLower === "no" ||
       mensagemLower.includes("cancelar") ||
       mensagemLower.includes("não quero") ||
       mensagemLower.includes("nao quero");
-    
+
     if (confirmouDesbloqueio) {
       // Buscar CPF do cliente nas mensagens anteriores
       const userMessages = messages
         .filter(m => m.senderType === "user" || m.senderType === "contact")
         .slice(-10);
-      
+
       let documentoEncontrado: string | null = null;
       for (const msg of userMessages) {
         const doc = detectarDocumento(msg.content || "");
@@ -119,7 +123,7 @@ export async function processarFluxoRobotizado(
           break;
         }
       }
-      
+
       if (documentoEncontrado) {
         console.log(`[Automated Flow] Cliente confirmou desbloqueio. CPF: ${documentoEncontrado}. Processando...`);
         const resposta = await processarDesbloqueio(workspaceId, whatsappNumber, documentoEncontrado, currentContactId ?? undefined, conversationId);
@@ -131,24 +135,24 @@ export async function processarFluxoRobotizado(
       return "Entendi! O desbloqueio foi cancelado. Se precisar de mais alguma coisa, estou à disposição! 😊";
     }
   }
-  
+
   // SEGUNDO: Verificar se a mensagem atual contém um documento (CPF/CNPJ)
   const documentoNaMensagem = detectarDocumento(messageContent);
   console.log(`[Automated Flow] Documento detectado na mensagem atual:`, documentoNaMensagem);
-  
+
   if (documentoNaMensagem) {
     // Verificar se bot pediu CPF recentemente
-    const botPediuCPF = recentBotMessages.some(msg => 
-      msg.includes("preciso do cpf") || 
-      msg.includes("cpf ou cnpj") || 
+    const botPediuCPF = recentBotMessages.some(msg =>
+      msg.includes("preciso do cpf") ||
+      msg.includes("cpf ou cnpj") ||
       msg.includes("informe o cpf") ||
       msg.includes("informe o cnpj") ||
       msg.includes("por favor, informe") ||
       msg.includes("preciso do cpf ou cnpj")
     );
-    
+
     console.log(`[Automated Flow] Bot pediu CPF? ${botPediuCPF}`);
-    
+
     if (botPediuCPF) {
       // Cliente forneceu CPF após ser solicitado - processar consulta
       console.log(`[Automated Flow] ✅ CPF fornecido após solicitação: ${documentoNaMensagem}. Processando consulta...`);
@@ -167,19 +171,19 @@ export async function processarFluxoRobotizado(
       }
     }
   }
-  
+
   // Verificar se escolheu opção 2 (falar com atendente)
-  const escolheuAtendente = 
-    normalizedContent === "2" || 
+  const escolheuAtendente =
+    normalizedContent === "2" ||
     normalizedContent === "2️⃣" ||
     mensagem === "dois" ||
     mensagem.includes("falar com atendente") ||
     mensagem.includes("atendente humano");
-  
+
   if (escolheuAtendente) {
     return "Entendi! Vou transferir você agora para um atendente humano que pode te ajudar melhor. Aguarde só um instante, por favor.";
   }
-  
+
   // Se não encontrou resposta automática, retorna null para passar para IA
   console.log(`[Automated Flow] Nenhuma resposta automática encontrada. Retornando null.`);
   return null;

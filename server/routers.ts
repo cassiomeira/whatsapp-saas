@@ -6,10 +6,11 @@ import { z } from "zod";
 import * as db from "./db";
 import { getWorkspaceIxcMetrics, getIxcEvents, getContactStatusEvents, getContactSla, deleteContactFully, deleteAllContacts, createContact, getContactByNumber, normalizePhone } from "./db";
 import { processIncomingMessage } from "./aiService";
-import { getEvolutionService } from "./evolutionService";
+
 import { TRPCError } from "@trpc/server";
 import { parse } from "csv-parse/sync";
 import type { InsertProduct, Contact } from "../drizzle/schema";
+import { getWhatsAppClient, resolveLidSync } from "./whatsappService";
 import { createClient } from "@supabase/supabase-js";
 
 const MAX_UPLOAD_ERRORS = 10;
@@ -262,7 +263,7 @@ export const appRouter = router({
       }
       return workspace;
     }),
-    
+
     // Atualizar workspace
     update: protectedProcedure
       .input(z.object({
@@ -273,7 +274,7 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         await db.updateWorkspace(ctx.user.workspaceId, input);
         return { success: true };
       }),
@@ -519,7 +520,7 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         try {
           console.log(`[Kanban] Updating contact ${input.contactId} status to ${input.status}`);
           await db.updateContactKanbanStatus(input.contactId, input.status);
@@ -578,6 +579,64 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    resolveLids: protectedProcedure
+      .mutation(async ({ ctx }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
+        const connectedInstance = instances.find(i => i.status === "connected");
+
+        if (!connectedInstance) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Nenhuma instância conectada para sincronizar. Verifique a aba WhatsApp." });
+        }
+
+        console.log(`[BatchSync] Starting LID resolution for workspace ${ctx.user.workspaceId} using instance ${connectedInstance.instanceKey}`);
+
+        const allContacts = await db.getContactsByWorkspace(ctx.user.workspaceId);
+        let correctedCount = 0;
+        let suspiciousCount = 0;
+
+        for (const contact of allContacts) {
+          // Ajustado para >= 14 pois vimos LIDs com 14 dígitos
+          const isProbablyLid = contact.whatsappNumber.length >= 14 && !contact.whatsappNumber.includes("-");
+
+          if (isProbablyLid) {
+            suspiciousCount++;
+            const lidInMetadata = (contact.metadata as any)?.whatsappLid;
+            console.log(`[BatchSync] Attempting to resolve suspicious contact: ${contact.whatsappNumber} (ID: ${contact.id})`);
+
+            const resolved = await resolveLidSync(connectedInstance.instanceKey!, contact.whatsappNumber, lidInMetadata);
+
+            if (resolved && resolved !== contact.whatsappNumber) {
+              console.log(`[BatchSync] SUCCESS: ${contact.whatsappNumber} resolved to ${resolved}`);
+              await db.updateContactWhatsappNumber(contact.id, resolved);
+
+              // Se o nome for o número antigo, atualizar nome também
+              if (!contact.name || contact.name === contact.whatsappNumber) {
+                await db.updateContactName(contact.id, resolved);
+              }
+
+              // Garantir que metadados tenham o JID correto para busca de foto e exibição
+              await db.updateContactMetadata(contact.id, (m: any = {}) => ({
+                ...m,
+                whatsappJid: `${resolved}@s.whatsapp.net`,
+                whatsappLid: lidInMetadata || (contact.whatsappNumber.includes("@lid") ? contact.whatsappNumber : `${contact.whatsappNumber}@lid`),
+                displayNumber: resolved
+              }));
+
+              correctedCount++;
+            } else {
+              console.log(`[BatchSync] FAILED to resolve ${contact.whatsappNumber}`);
+            }
+          }
+        }
+
+        console.log(`[BatchSync] Finished. Suspicious: ${suspiciousCount}, Corrected: ${correctedCount}`);
+        return { success: true, correctedCount, suspiciousCount };
+      }),
+
     // Iniciar nova conversa (criar/obter contato e conversa)
     startConversation: protectedProcedure
       .input(z.object({
@@ -591,10 +650,10 @@ export const appRouter = router({
 
         // Normalizar número (remover caracteres não numéricos, exceto +)
         const normalizedNumber = normalizePhone(input.whatsappNumber);
-        
+
         // Buscar ou criar contato
         let contact = await db.getContactByNumber(ctx.user.workspaceId, normalizedNumber);
-        
+
         if (!contact) {
           // Criar novo contato
           const destinationJid = `${normalizedNumber}@c.us`;
@@ -633,12 +692,12 @@ export const appRouter = router({
 
         // Buscar ou criar conversa
         let conversation = await db.getConversationByContact(ctx.user.workspaceId, contact.id);
-        
+
         if (!conversation) {
           // Buscar instância ativa
           const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
           const activeInstance = instances.find(i => i.status === "connected") || instances[0];
-          
+
           if (!activeInstance) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhuma instância WhatsApp conectada" });
           }
@@ -649,7 +708,7 @@ export const appRouter = router({
             instanceId: activeInstance.id,
             status: "pending_human", // Status para indicar que é atendimento humano
           });
-          
+
           conversation = await db.getConversationByContact(ctx.user.workspaceId, contact.id);
         } else {
           // Atualizar status da conversa para pending_human
@@ -735,7 +794,7 @@ export const appRouter = router({
         const buffer = Buffer.from(input.fileData, "base64");
         const extension = input.fileName.split('.').pop()?.toLowerCase() || '';
         let mediaType: "image" | "audio" | "video" | "document" = "document";
-        
+
         if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension)) {
           mediaType = "image";
         } else if (['mp3', 'ogg', 'wav', 'm4a', 'opus', 'webm'].includes(extension)) {
@@ -750,16 +809,16 @@ export const appRouter = router({
         // Usar Supabase Storage
         const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
         const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
-        
+
         if (supabaseUrl && supabaseKey) {
           try {
             const supabase = createClient(supabaseUrl, supabaseKey);
             const bucketName = "whatsapp-media";
-            
+
             // Verificar se o bucket existe, criar se não existir
             const { data: buckets } = await supabase.storage.listBuckets();
             const bucketExists = buckets?.some(b => b.name === bucketName);
-            
+
             if (!bucketExists) {
               console.log(`[Messages] Creating Supabase Storage bucket: ${bucketName}`);
               const { error: createError } = await supabase.storage.createBucket(bucketName, {
@@ -771,7 +830,7 @@ export const appRouter = router({
                 throw createError;
               }
             }
-            
+
             const filePath = `workspaces/${ctx.user.workspaceId}/media/${Date.now()}-${input.fileName}`;
             const { data, error } = await supabase.storage
               .from(bucketName)
@@ -779,16 +838,16 @@ export const appRouter = router({
                 contentType,
                 upsert: false,
               });
-            
+
             if (error) {
               console.error("[Messages] Supabase Storage upload error:", error);
               throw error;
             }
-            
+
             const { data: urlData } = supabase.storage
               .from(bucketName)
               .getPublicUrl(filePath);
-            
+
             console.log(`[Messages] Media uploaded to Supabase Storage: ${urlData.publicUrl}`);
             return { mediaUrl: urlData.publicUrl, mediaType, fileName: input.fileName };
           } catch (supabaseError: any) {
@@ -835,25 +894,25 @@ export const appRouter = router({
         console.log(`[Messages] Looking for conversation ${input.conversationId} in workspace ${ctx.user.workspaceId}`);
         const conversations = await db.getConversationsByWorkspace(ctx.user.workspaceId!);
         const conversation = conversations.find(c => c.id === input.conversationId);
-        
+
         console.log(`[Messages] Conversation found:`, conversation ? {
           id: conversation.id,
           contactId: conversation.contactId,
           instanceId: conversation.instanceId,
           status: conversation.status
         } : "NOT FOUND");
-        
+
         if (conversation) {
           // Buscar contato
           const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId!);
           const contact = contacts.find(c => c.id === conversation.contactId);
-          
+
           console.log(`[Messages] Contact found:`, contact ? {
             id: contact.id,
             whatsappNumber: contact.whatsappNumber,
             name: contact.name
           } : "NOT FOUND");
-          
+
           if (contact) {
             const destinationNumber =
               (contact.metadata as any)?.whatsappJid ||
@@ -867,14 +926,14 @@ export const appRouter = router({
             const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId!);
             console.log(`[Messages] Found ${instances.length} instances for workspace ${ctx.user.workspaceId}, looking for instanceId: ${conversation.instanceId}`);
             console.log(`[Messages] Available instances:`, instances.map(i => ({ id: i.id, instanceKey: i.instanceKey, status: i.status })));
-            
+
             let instance = instances.find(i => i.id === conversation.instanceId);
-            
+
             // Se a instância da conversa não existir, tentar usar a primeira instância conectada
             if (!instance || !instance.instanceKey) {
               console.warn(`[Messages] Instance ${conversation.instanceId} not found or invalid, trying to use first connected instance`);
               instance = instances.find(i => i.instanceKey && (i.status === "connected" || i.status === "connecting"));
-              
+
               if (instance) {
                 console.log(`[Messages] Using fallback instance: ${instance.instanceKey} (ID: ${instance.id})`);
                 // Atualizar a conversa para usar a instância correta
@@ -889,14 +948,14 @@ export const appRouter = router({
             } else {
               console.log(`[Messages] Using conversation's instance: ${instance.instanceKey} (ID: ${instance.id}, status: ${instance.status})`);
             }
-            
+
             if (instance && instance.instanceKey) {
               // Enviar mensagem/mídia via WhatsApp
               try {
                 const { sendTextMessage, sendMediaMessage } = await import("./whatsappService");
-                
+
                 let whatsappMessageId: string | null = null;
-                
+
                 if (input.mediaUrl && input.mediaType) {
                   console.log(`[Messages] Attempting to send media from app:`, {
                     instanceKey: instance.instanceKey,
@@ -904,7 +963,7 @@ export const appRouter = router({
                     mediaType: input.mediaType,
                     mediaUrl: input.mediaUrl,
                   });
-                  
+
                   whatsappMessageId = await sendMediaMessage(
                     instance.instanceKey,
                     destinationNumber,
@@ -912,7 +971,7 @@ export const appRouter = router({
                     input.mediaType,
                     input.caption || input.content
                   );
-                  
+
                   console.log(`[Messages] Mídia do atendente enviada com sucesso para ${destinationNumber}, messageId: ${whatsappMessageId}`);
                 } else if (input.content) {
                   console.log(`[Messages] Attempting to send message from app:`, {
@@ -920,34 +979,34 @@ export const appRouter = router({
                     whatsappNumber: destinationNumber,
                     content: input.content.substring(0, 50),
                   });
-                  
+
                   whatsappMessageId = await sendTextMessage(
                     instance.instanceKey,
                     destinationNumber,
                     input.content
                   );
-                  
+
                   console.log(`[Messages] Mensagem do atendente enviada com sucesso para ${destinationNumber}, messageId: ${whatsappMessageId}`);
                 }
-                
+
                 // Atualizar mensagem com whatsappMessageId
                 if (whatsappMessageId && messageId) {
                   await db.updateMessageWhatsappId(messageId, whatsappMessageId);
                 }
-                } catch (error: any) {
+              } catch (error: any) {
                 console.error(`[Messages] Erro ao enviar mensagem/mídia via WhatsApp:`, error);
                 console.error(`[Messages] Error stack:`, error?.stack);
-                
+
                 // Mensagem de erro mais específica
                 let errorMessage = `Failed to send message/media: ${error.message}`;
-                
+
                 // Erro de conexão do WhatsApp
                 if (error.message.includes('not connected') || error.message.includes('state: null')) {
                   errorMessage = `A instância WhatsApp não está conectada. Por favor, verifique se a instância está online e conectada ao WhatsApp.`;
                 } else if (input.mediaType === 'audio' && error.message.includes('Evaluation failed')) {
                   errorMessage = `Falha ao enviar áudio: O WhatsApp Web não suporta o formato WebM. Por favor, tente gravar em outro formato (MP3, OGG) ou envie uma imagem/vídeo para testar.`;
                 }
-                
+
                 throw new TRPCError({
                   code: "INTERNAL_SERVER_ERROR",
                   message: errorMessage,
@@ -959,7 +1018,7 @@ export const appRouter = router({
                 instance: instance ? "found" : "not found",
                 instanceKey: instance?.instanceKey || "missing",
               });
-              
+
               throw new TRPCError({
                 code: "INTERNAL_SERVER_ERROR",
                 message: `Instância WhatsApp não encontrada ou inválida (ID: ${conversation.instanceId}). Verifique se a instância está configurada corretamente.`,
@@ -1028,11 +1087,7 @@ export const appRouter = router({
 
         // Deletar no WhatsApp
         try {
-          const { getWhatsAppClient } = await import("./whatsappService");
-          const client = getWhatsAppClient(instance.instanceKey);
-          if (!client) {
-            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "WhatsApp client not ready" });
-          }
+          const { deleteMessage } = await import("./whatsappService");
 
           const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId);
           const contact = contacts.find(c => c.id === conversation.contactId);
@@ -1040,19 +1095,15 @@ export const appRouter = router({
             throw new TRPCError({ code: "NOT_FOUND", message: "Contact not found" });
           }
 
-          // Obter a mensagem direto pelo ID serializado
-          const msg = await client.getMessageById(message.whatsappMessageId);
-          
-          if (msg) {
-            await msg.delete(true); // true para deleteForEveryone
-            console.log(`[Messages] Message ${message.id} deleted for everyone on WhatsApp.`);
-          } else {
-            console.warn(`[Messages] WhatsApp message ${message.whatsappMessageId} not found for deletion.`);
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "Mensagem não encontrada no WhatsApp para apagar",
-            });
-          }
+          // Obter a mensagem direto pelo ID serializado e deletar
+          await deleteMessage(
+            instance.instanceKey,
+            contact.whatsappNumber || "",
+            message.whatsappMessageId,
+            true
+          );
+          console.log(`[Messages] Message ${message.id} deleted for everyone on WhatsApp.`);
+
         } catch (error: any) {
           console.error("[Messages] Error deleting message on WhatsApp:", error);
           throw new TRPCError({
@@ -1118,7 +1169,7 @@ export const appRouter = router({
           for (const file of files) {
             // O tamanho pode estar em metadata.size ou em size diretamente
             const size = (file.metadata as any)?.size || (file as any).size || 0;
-            
+
             if (size > 0) {
               totalSize += size;
               fileCount++;
@@ -1222,7 +1273,7 @@ export const appRouter = router({
             if (input.fileTypes && input.fileTypes.length > 0) {
               const ext = file.name.split('.').pop()?.toLowerCase() || '';
               let fileType: "audio" | "image" | "video" | "document" = "document";
-              
+
               if (['mp3', 'ogg', 'wav', 'm4a', 'opus', 'webm'].includes(ext)) {
                 fileType = "audio";
               } else if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
@@ -1241,7 +1292,7 @@ export const appRouter = router({
               const fileDate = new Date(file.created_at);
               if (fileDate < cutoffDate) {
                 filesToDelete.push(`${workspacePath}${file.name}`);
-                
+
                 // Tentar obter tamanho do arquivo
                 const size = (file.metadata as any)?.size || (file as any).size || 0;
                 totalSizeToFree += size;
@@ -1330,10 +1381,16 @@ export const appRouter = router({
         });
 
         try {
+          // Detectar delimitador (ponto e vírgula ou vírgula)
+          const firstLine = input.fileContent.split('\n')[0] || '';
+          const delimiter = firstLine.includes(';') ? ';' : ',';
+
           const parsedRows = parse(input.fileContent, {
             columns: true,
             skip_empty_lines: true,
             trim: true,
+            delimiter: delimiter,
+            relax_column_count: true, // Permitir linhas com menos colunas (tratar como null)
           }) as Record<string, unknown>[];
 
           if (!parsedRows || parsedRows.length === 0) {
@@ -1481,21 +1538,21 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         // Criar conversa de teste temporária
         const testContactId = await db.createContact({
           workspaceId: ctx.user.workspaceId,
           whatsappNumber: "test-bot-" + Date.now(),
           name: "Teste Bot",
         });
-        
+
         const testConvId = await db.createConversation({
           workspaceId: ctx.user.workspaceId,
           contactId: testContactId as number,
           instanceId: 1,
           status: "bot_handling",
         });
-        
+
         // Gerar resposta da IA SEM enviar para WhatsApp
         const { generateBotResponse } = await import("./aiService");
         const botResponse = await generateBotResponse(
@@ -1503,7 +1560,7 @@ export const appRouter = router({
           testConvId as number,
           input.message
         );
-        
+
         return { response: botResponse };
       }),
 
@@ -1548,43 +1605,46 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         try {
           // Pegar configurações do workspace
           const workspace = await db.getWorkspaceById(ctx.user.workspaceId);
           if (!workspace) {
             throw new Error("Workspace not found");
           }
-          
+
           const instanceKey = `ws${ctx.user.workspaceId}_${Date.now()}`;
-          
-          // Importar serviço WhatsApp (whatsapp-web.js)
+
+
+
+          // Importar serviço WhatsApp (Baileys)
           const { createWhatsAppInstance } = await import("./whatsappService");
-          
+
           // Criar instância WhatsApp
           const result = await createWhatsAppInstance(instanceKey);
-          
+
           // Salvar no banco
           const instanceId = await db.createWhatsappInstance({
             workspaceId: ctx.user.workspaceId,
             name: input.name,
-            instanceKey,
-            status: result.instance.status,
+            instanceKey: result.instance.instanceName,
+            status: result.instance.status === "open" ? "connected" : (result.instance.status === "close" ? "disconnected" : "connecting"),
             qrCode: result.qrcode?.base64,
           });
-          
+
           return {
             instanceId,
             qrCode: result.qrcode?.base64 || null,
           };
         } catch (error: any) {
+          console.error("[WhatsApp] Error creating instance:", error);
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
             message: error.message,
           });
         }
       }),
-    
+
     // Obter QR Code
     getQRCode: protectedProcedure
       .input(z.object({
@@ -1594,21 +1654,21 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         try {
           const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
           const instance = instances.find(i => i.id === input.instanceId);
-          
+
           if (!instance || !instance.instanceKey) {
             throw new Error("Instance not found");
           }
-          
+
           const { getQRCode } = await import("./whatsappService");
           const qrData = await getQRCode(instance.instanceKey);
-          
+
           // Atualizar QR no banco
           await db.updateWhatsappInstanceStatus(instance.id, "connecting", undefined, qrData.base64);
-          
+
           return { qrCode: qrData.base64 };
         } catch (error: any) {
           throw new TRPCError({
@@ -1617,7 +1677,7 @@ export const appRouter = router({
           });
         }
       }),
-    
+
     // Verificar status
     checkStatus: protectedProcedure
       .input(z.object({
@@ -1627,21 +1687,21 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         try {
           const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
           const instance = instances.find(i => i.id === input.instanceId);
-          
+
           if (!instance || !instance.instanceKey) {
             throw new Error("Instance not found");
           }
-          
+
           const { getInstanceStatus } = await import("./whatsappService");
           const status = await getInstanceStatus(instance.instanceKey);
-          
+
           // Atualizar status no banco
           await db.updateWhatsappInstanceStatus(instance.id, status.status, status.phoneNumber);
-          
+
           return {
             status: status.status,
             phoneNumber: status.phoneNumber,
@@ -1653,7 +1713,7 @@ export const appRouter = router({
           };
         }
       }),
-    
+
     // Desconectar instância
     disconnect: protectedProcedure
       .input(z.object({
@@ -1663,18 +1723,18 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         try {
           const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
           const instance = instances.find(i => i.id === input.instanceId);
-          
+
           if (!instance || !instance.instanceKey) {
             throw new Error("Instance not found");
           }
-          
+
           const { disconnectInstance } = await import("./whatsappService");
           await disconnectInstance(instance.instanceKey);
-          
+
           return { success: true };
         } catch (error: any) {
           throw new TRPCError({
@@ -1693,28 +1753,28 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         try {
           const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
           const instance = instances.find(i => i.id === input.instanceId);
-          
+
           if (!instance || !instance.instanceKey) {
             throw new Error("Instance not found");
           }
-          
+
           const { reconnectInstance } = await import("./whatsappService");
           const result = await reconnectInstance(instance.instanceKey);
-          
+
           // Atualizar status no banco
           await db.updateWhatsappInstanceStatus(
             instance.id,
             "connecting",
             undefined, // phoneNumber
-            result.qrCode || undefined // qrCode
+            result.qrcode?.base64 || undefined // qrCode
           );
-          
+
           return {
-            qrCode: result.qrCode,
+            qrCode: result.qrcode?.base64,
           };
         } catch (error: any) {
           throw new TRPCError({
@@ -1729,12 +1789,12 @@ export const appRouter = router({
       if (!ctx.user.workspaceId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
       }
-      
+
       const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
-      
+
       // Tentar atualizar status de cada instância
       const { getInstanceStatus } = await import("./whatsappService");
-      
+
       for (const instance of instances) {
         if (!instance.instanceKey) continue;
         try {
@@ -1748,7 +1808,7 @@ export const appRouter = router({
           // Ignorar erros de status
         }
       }
-      
+
       return instances;
     }),
 
@@ -1761,15 +1821,15 @@ export const appRouter = router({
         if (!ctx.user.workspaceId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        
+
         try {
           const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
           const instance = instances.find(i => i.id === input.instanceId);
-          
+
           if (!instance) {
             throw new Error("Instance not found");
           }
-          
+
           // Desconectar antes de deletar
           if (instance.instanceKey) {
             try {
@@ -1780,10 +1840,10 @@ export const appRouter = router({
               console.warn("[WhatsApp] Error disconnecting instance before delete:", error);
             }
           }
-          
+
           // Deletar do banco de dados
           await db.deleteWhatsappInstance(input.instanceId);
-          
+
           return { success: true };
         } catch (error: any) {
           throw new TRPCError({
@@ -2031,8 +2091,8 @@ export const appRouter = router({
         return db.getCampaignAudiences(ctx.user.workspaceId);
       }),
 
-    create: protectedProcedure
-      .input(z.object({
+      create: protectedProcedure
+        .input(z.object({
           name: z.string().min(1),
           numbers: z.array(z.string()).optional(),
         }))

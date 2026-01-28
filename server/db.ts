@@ -270,7 +270,7 @@ async function ensureIxcEventsTable() {
   } finally {
     try {
       await (client as any)?.close?.();
-    } catch {}
+    } catch { }
   }
 }
 
@@ -400,7 +400,7 @@ async function ensureMessagesWhatsappIdColumn() {
   } finally {
     try {
       await (client as any)?.close?.();
-    } catch {}
+    } catch { }
   }
 }
 
@@ -430,7 +430,7 @@ async function ensureContactStatusEventsTable() {
   } finally {
     try {
       await (client as any)?.close?.();
-    } catch {}
+    } catch { }
   }
 }
 
@@ -566,11 +566,11 @@ export async function updateWorkspace(id: number, data: { name?: string; metadat
     console.warn("[DB] updateWorkspace: Database não disponível");
     throw new Error("Database not available");
   }
-  
+
   const updateData: any = {};
   if (data.name !== undefined) updateData.name = data.name;
-  if (data.metadata !== undefined) updateData.metadata = data.metadata; 
-  
+  if (data.metadata !== undefined) updateData.metadata = data.metadata;
+
   console.log("[DB] updateWorkspace: Dados para atualização:", updateData);
 
   try {
@@ -591,7 +591,7 @@ export async function createWorkspace(workspace: InsertWorkspace) {
     console.warn("[DB] createWorkspace: Database não disponível");
     throw new Error("Database not available");
   }
-  
+
   try {
     const result = await db.insert(workspaces).values(workspace);
     const insertId = Number((result as any).lastInsertRowid ?? 0);
@@ -606,7 +606,7 @@ export async function createWorkspace(workspace: InsertWorkspace) {
 export async function getWorkspacesByOwnerId(ownerId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   return db.select().from(workspaces).where(eq(workspaces.ownerId, ownerId));
 }
 
@@ -614,7 +614,7 @@ export async function getWorkspacesByOwnerId(ownerId: number) {
 export async function createWhatsappInstance(instance: InsertWhatsappInstance) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   const result = await db.insert(whatsappInstances).values(instance);
   return Number((result as any).lastInsertRowid ?? 0);
 }
@@ -622,7 +622,7 @@ export async function createWhatsappInstance(instance: InsertWhatsappInstance) {
 export async function getWhatsappInstancesByWorkspace(workspaceId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   return db.select().from(whatsappInstances).where(eq(whatsappInstances.workspaceId, workspaceId));
 }
 
@@ -642,7 +642,7 @@ export async function getWhatsappInstanceByKey(instanceKey: string) {
 export async function getAllConnectedWhatsappInstances() {
   const db = await getDb();
   if (!db) return [];
-  
+
   return db.select().from(whatsappInstances).where(
     or(
       eq(whatsappInstances.status, "connected"),
@@ -654,15 +654,15 @@ export async function getAllConnectedWhatsappInstances() {
 export async function updateWhatsappInstanceStatus(id: number, status: string, phoneNumber?: string, qrCode?: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   try {
-  const updateData: any = { status: status as any, updatedAt: new Date() };
-  if (qrCode !== undefined) updateData.qrCode = qrCode;
-  if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
-  
-  await db.update(whatsappInstances)
-    .set(updateData)
-    .where(eq(whatsappInstances.id, id));
+    const updateData: any = { status: status as any, updatedAt: new Date() };
+    if (qrCode !== undefined) updateData.qrCode = qrCode;
+    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+
+    await db.update(whatsappInstances)
+      .set(updateData)
+      .where(eq(whatsappInstances.id, id));
   } catch (error: any) {
     console.error(`[DB] Error updating WhatsApp instance ${id} status:`, error);
     if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {
@@ -675,9 +675,9 @@ export async function updateWhatsappInstanceStatus(id: number, status: string, p
 export async function deleteWhatsappInstance(id: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   try {
-  await db.delete(whatsappInstances).where(eq(whatsappInstances.id, id));
+    await db.delete(whatsappInstances).where(eq(whatsappInstances.id, id));
   } catch (error: any) {
     console.error(`[DB] Error deleting WhatsApp instance ${id}:`, error);
     if (error?.code === "SQLITE_FULL" || error?.cause?.code === "SQLITE_FULL") {
@@ -691,7 +691,7 @@ export async function deleteWhatsappInstance(id: number) {
 export async function createContact(contact: InsertContact) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   const result = await db.insert(contacts).values(contact);
   return Number((result as any).lastInsertRowid ?? 0);
 }
@@ -699,7 +699,7 @@ export async function createContact(contact: InsertContact) {
 export async function getContactsByWorkspace(workspaceId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   const results = await db.select().from(contacts)
     .where(eq(contacts.workspaceId, workspaceId))
     .orderBy(desc(contacts.updatedAt));
@@ -797,7 +797,7 @@ export async function deleteAllContacts(workspaceId: number) {
 export async function updateContactKanbanStatus(id: number, status: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   try {
     const existing = await db.select().from(contacts).where(eq(contacts.id, id)).limit(1);
     if (!existing.length) return;
@@ -835,12 +835,22 @@ export async function updateContactWhatsappNumber(id: number, whatsappNumber: st
     .where(eq(contacts.id, id));
 }
 
+
 export async function updateContactName(id: number, name: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   await db.update(contacts)
     .set({ name, updatedAt: new Date() })
+    .where(eq(contacts.id, id));
+}
+
+export async function updateContactProfilePic(id: number, profilePicUrl: string | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(contacts)
+    .set({ profilePicUrl, updatedAt: new Date() })
     .where(eq(contacts.id, id));
 }
 
@@ -876,7 +886,7 @@ export async function moveContactsToStatus(workspaceId: number, fromStatus: stri
 export async function createConversation(conversation: InsertConversation) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   const result = await db.insert(conversations).values(conversation);
   return Number((result as any).lastInsertRowid ?? 0);
 }
@@ -903,7 +913,7 @@ export async function getConversationByContact(workspaceId: number, contactId: n
 export async function getConversationsByWorkspace(workspaceId: number, status?: string) {
   const db = await getDb();
   if (!db) return [];
-  
+
   if (status) {
     return db.select().from(conversations)
       .where(and(
@@ -912,7 +922,7 @@ export async function getConversationsByWorkspace(workspaceId: number, status?: 
       ))
       .orderBy(desc(conversations.lastMessageAt));
   }
-  
+
   return db.select().from(conversations)
     .where(eq(conversations.workspaceId, workspaceId))
     .orderBy(desc(conversations.lastMessageAt));
@@ -921,12 +931,12 @@ export async function getConversationsByWorkspace(workspaceId: number, status?: 
 export async function updateConversationStatus(id: number, status: string, assignedToId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   const updateData: any = { status, updatedAt: new Date() };
   if (assignedToId !== undefined) {
     updateData.assignedToId = assignedToId;
   }
-  
+
   await db.update(conversations)
     .set(updateData)
     .where(eq(conversations.id, id));
@@ -936,21 +946,21 @@ export async function updateConversationStatus(id: number, status: string, assig
 export async function createMessage(message: InsertMessage) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   const result = await db.insert(messages).values(message);
-  
+
   // Update conversation lastMessageAt
   await db.update(conversations)
     .set({ lastMessageAt: new Date() })
     .where(eq(conversations.id, message.conversationId));
-  
+
   return Number((result as any).lastInsertRowid ?? 0);
 }
 
 export async function getMessagesByConversation(conversationId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   return db.select().from(messages)
     .where(eq(messages.conversationId, conversationId))
     .orderBy(messages.sentAt);
@@ -959,18 +969,18 @@ export async function getMessagesByConversation(conversationId: number) {
 export async function getMessageById(messageId: number) {
   const db = await getDb();
   if (!db) return undefined;
-  
+
   const result = await db.select().from(messages)
     .where(eq(messages.id, messageId))
     .limit(1);
-  
+
   return result[0];
 }
 
 export async function updateMessageWhatsappId(messageId: number, whatsappMessageId: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   await db.update(messages)
     .set({ whatsappMessageId })
     .where(eq(messages.id, messageId));
@@ -979,7 +989,7 @@ export async function updateMessageWhatsappId(messageId: number, whatsappMessage
 export async function updateMessageContent(messageId: number, content: string, messageType: string = "text", mediaUrl: string | null = null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   await db.update(messages)
     .set({ content, messageType, mediaUrl })
     .where(eq(messages.id, messageId));
@@ -989,11 +999,11 @@ export async function updateMessageContent(messageId: number, content: string, m
 export async function getBotConfigByWorkspace(workspaceId: number) {
   const db = await getDb();
   if (!db) return undefined;
-  
+
   const result = await db.select().from(botConfigs)
     .where(eq(botConfigs.workspaceId, workspaceId))
     .limit(1);
-  
+
   return result[0];
 }
 
@@ -1003,7 +1013,7 @@ export async function upsertBotConfig(config: InsertBotConfig) {
     console.warn("[DB] upsertBotConfig: Database não disponível");
     throw new Error("Database not available");
   }
-  
+
   try {
     await db.insert(botConfigs).values(config)
       .onConflictDoUpdate({
@@ -1026,7 +1036,7 @@ export async function upsertBotConfig(config: InsertBotConfig) {
 export async function getFlowsByWorkspace(workspaceId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   return db.select().from(conversationFlows)
     .where(eq(conversationFlows.workspaceId, workspaceId))
     .orderBy(desc(conversationFlows.updatedAt));
@@ -1036,7 +1046,7 @@ export async function getFlowsByWorkspace(workspaceId: number) {
 export async function getCampaignsByWorkspace(workspaceId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   return db.select().from(campaigns)
     .where(eq(campaigns.workspaceId, workspaceId))
     .orderBy(desc(campaigns.createdAt));
@@ -1455,7 +1465,9 @@ export async function searchProducts(workspaceId: number, query: string, limit =
       and(
         eq(products.workspaceId, workspaceId),
         or(
+          sql`REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(${products.name}), 'á', 'a'), 'à', 'a'), 'ã', 'a'), 'â', 'a'), 'é', 'e'), 'ê', 'e'), 'í', 'i'), 'ó', 'o'), 'ô', 'o'), 'õ', 'o'), 'ú', 'u'), 'ç', 'c') LIKE ${collapsedPattern}`,
           sql`${products.name} LIKE ${collapsedPattern} COLLATE NOCASE`,
+          sql`REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(ifnull(${products.description}, '')), 'á', 'a'), 'à', 'a'), 'ã', 'a'), 'â', 'a'), 'é', 'e'), 'ê', 'e'), 'í', 'i'), 'ó', 'o'), 'ô', 'o'), 'õ', 'o'), 'ú', 'u'), 'ç', 'c') LIKE ${collapsedPattern}`,
           sql`ifnull(${products.description}, '') LIKE ${collapsedPattern} COLLATE NOCASE`,
           sql`${products.sku} LIKE ${pattern}`
         )
@@ -1474,7 +1486,7 @@ export async function searchProducts(workspaceId: number, query: string, limit =
 export async function getUsersByWorkspace(workspaceId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   return db.select().from(users)
     .where(eq(users.workspaceId, workspaceId))
     .orderBy(desc(users.createdAt));
@@ -1483,7 +1495,7 @@ export async function getUsersByWorkspace(workspaceId: number) {
 export async function updateUserStatus(userId: number, status: "pending" | "approved" | "blocked") {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   await db.update(users)
     .set({ status, updatedAt: new Date() })
     .where(eq(users.id, userId));

@@ -25,7 +25,7 @@ export function detectarPedidoAtendente(mensagem: string): {
     "olá tudo bem",
     "ola tudo bem"
   ];
-  
+
   // Se for apenas uma saudação simples, não transferir
   if (saudacoesSimples.some(saudacao => msg === saudacao || msg.startsWith(saudacao + " ") || msg.startsWith(saudacao + "!"))) {
     console.log(`[Human Attendant Helper] Mensagem detectada como saudação simples, ignorando: "${msg}"`);
@@ -75,14 +75,14 @@ export function detectarPedidoAtendente(mensagem: string): {
     "preciso de um atendente",
     "me conecte com atendente"
   ];
-  
+
   // Verificar se alguma frase explícita está presente (confiança muito alta)
   const temFraseExplicita = frasesExplicitas.some(frase => msg.includes(frase));
-  
+
   if (temFraseExplicita) {
     return { precisaAtendente: true, confianca: 0.9 }; // Confiança muito alta para frases explícitas
   }
-  
+
   // Contar quantas palavras-chave aparecem (mas exigir pelo menos 2 para evitar falso positivo)
   const matches = palavrasAtendente.filter(palavra => msg.includes(palavra)).length;
 
@@ -91,7 +91,7 @@ export function detectarPedidoAtendente(mensagem: string): {
     const confianca = Math.min(0.7 + (matches - 2) * 0.1, 0.9); // Mínimo 0.7 para 2 matches, máximo 0.9
     return { precisaAtendente: true, confianca };
   }
-  
+
   // Se tem apenas 1 match, confiança baixa demais - não transferir
   // (pode ser falso positivo, como "tem atendimento delivery?")
 
@@ -103,7 +103,7 @@ export function detectarPedidoAtendente(mensagem: string): {
  */
 export function gerarMensagemTransferencia(nomeCliente?: string): string {
   const saudacao = nomeCliente ? `${nomeCliente}` : "Olá";
-  
+
   return `${saudacao}, entendo que você gostaria de falar com um atendente humano! 😊
 
 Estou transferindo você para nossa equipe de atendimento agora mesmo. Um de nossos atendentes entrará em contato com você em breve.
@@ -136,7 +136,7 @@ export function detectarIndecisaoOuSemFechamento(mensagem: string): {
     "preciso conversar antes",
     "preciso consultar alguém",
     "preciso conversar com alguém",
-    
+
     // Recusa ou adiamento de compra
     "não quero agora",
     "nao quero agora",
@@ -154,7 +154,7 @@ export function detectarIndecisaoOuSemFechamento(mensagem: string): {
     "nao fecho agora",
     "não fecho a compra agora",
     "nao fecho a compra agora",
-    
+
     // Dificuldade financeira clara
     "muito caro para mim",
     "está muito caro",
@@ -165,7 +165,7 @@ export function detectarIndecisaoOuSemFechamento(mensagem: string): {
     "nao tenho condicoes",
     "preço alto demais",
     "preco alto demais",
-    
+
     // Dificuldade em decidir entre opções (após ver produtos)
     "não consigo decidir",
     "nao consigo decidir",
@@ -182,7 +182,7 @@ export function detectarIndecisaoOuSemFechamento(mensagem: string): {
     "qual você recomenda",
     "qual vc recomenda",
     "qual recomenda",
-    
+
     // Indecisão após ver opções
     "tenho dúvidas",
     "tenho duvidas",
@@ -199,15 +199,15 @@ export function detectarIndecisaoOuSemFechamento(mensagem: string): {
   // Contar matches, mas exigir contexto de compra (não apenas perguntas sobre produtos)
   let matches = 0;
   let hasCompraContext = false;
-  
+
   // Verificar se há contexto de compra/decidir sobre comprar
   const contextoCompra = [
     "comprar", "compra", "fechar", "pedido", "levar", "quero comprar",
     "vou comprar", "preciso comprar", "escolher", "decidir"
   ];
-  
+
   hasCompraContext = contextoCompra.some(ctx => msg.includes(ctx));
-  
+
   // Contar apenas sinais que indicam indecisão
   matches = sinaisIndecisao.filter(sinal => msg.includes(sinal)).length;
 
@@ -219,14 +219,14 @@ export function detectarIndecisaoOuSemFechamento(mensagem: string): {
     // Quanto mais sinais, maior a confiança
     // Requer pelo menos 2 sinais OU 1 sinal com contexto de compra
     // Aumentado confiança base para ser mais conservador
-    const confianca = matches >= 3 
+    const confianca = matches >= 3
       ? Math.min(0.7 + (matches - 3) * 0.1, 0.9) // 3+ sinais = confiança alta
       : matches >= 2
-      ? Math.min(0.65 + (matches - 2) * 0.05, 0.85) // 2 sinais = confiança média-alta
-      : hasCompraContext
-      ? Math.min(0.7 + matches * 0.05, 0.8) // 1 sinal com contexto = confiança média
-      : 0.5; // Confiança baixa se só tem 1 sinal sem contexto (não transfere com isso)
-    
+        ? Math.min(0.65 + (matches - 2) * 0.05, 0.85) // 2 sinais = confiança média-alta
+        : hasCompraContext
+          ? Math.min(0.7 + matches * 0.05, 0.8) // 1 sinal com contexto = confiança média
+          : 0.5; // Confiança baixa se só tem 1 sinal sem contexto (não transfere com isso)
+
     // Só retornar precisaAtendente se confiança for alta o suficiente
     if (confianca >= 0.65) {
       return { precisaAtendente: true, confianca };
@@ -244,23 +244,22 @@ export function enriquecerPromptComAtendimento(promptOriginal: string): string {
 
 IMPORTANTE - TRANSFERÊNCIA AUTOMÁTICA PARA ATENDENTE HUMANO:
 
-⚠️ REGRA CRÍTICA: NUNCA PERGUNTE AO CLIENTE SE ELE QUER FALAR COM UM ATENDENTE HUMANO. 
+⚠️ REGRA: TENTE SEMPRE RESPONDER A DÚVIDA DO CLIENTE PRIMEIRO.
+Só transfira para humano se realmente não conseguir ajudar ou se o cliente solicitar.
 
-Se você identificar qualquer um dos seguintes sinais, TRANSFIRA AUTOMATICAMENTE para o atendente humano SEM PERGUNTAR:
+SINAIS PARA TRANSFERÊNCIA (Apenas se você não puder resolver):
+1. O cliente pedir EXPLICITAMENTE para falar com atendente, operador, gerente ou pessoa real.
+2. O cliente demonstrar INSATISFAÇÃO CLARA ou frustração.
+3. O problema for técnico ou financeiro complexo que exija validação humana (ex: confirmar estoque físico, negociar desconto especial).
 
-1. O cliente pedir explicitamente para falar com atendente, operador, gerente ou pessoa real
-2. O cliente demonstrar INDECISÃO ou DIFICULDADE em fechar a compra (ex: "não sei", "preciso pensar", "está caro", "vou ver depois", "tenho dúvidas")
-3. O cliente não conseguir decidir entre opções após múltiplas interações
-4. Você perceber que não consegue ajudar o cliente a fechar a venda
-5. O cliente parecer insatisfeito ou frustrado
+QUANDO O CLIENTE PERGUNTAR SOBRE PRODUTOS:
+- Responda se a loja trabalha com o item (ex: "tem sofá?", "tem roupa?").
+- Diga que você não tem o estoque ao vivo, mas que a loja trabalha sim com esse departamento.
+- SÓ ENTÃO, pergunte se ele quer falar com um vendedor para ver modelos.
+- NÃO transfira "de cara" sem explicar antes.
 
-QUANDO TRANSFERIR AUTOMATICAMENTE:
-- Apenas informe educadamente que está transferindo: "Entendi! Vou transferir você agora para um atendente humano que pode te ajudar melhor. Aguarde só um instante, por favor."
-- NUNCA pergunte: "Deseja falar com um atendente?" ou "Quer que eu transfira?"
-- O sistema detectará automaticamente e fará a transferência
-
-Lembre-se: Se o cliente ainda não fechou a compra e demonstra indecisão, TRANSFIRA IMEDIATAMENTE para maximizar a conversão.
-
-Seja sempre empático e profissional, mas seja proativo na transferência quando necessário.`;
+Se for transferir:
+- Apenas informe educadamente: "Vou chamar um consultor para te mostrar as opções disponíveis..."
+- O sistema detectará automaticamente.`;
 }
 

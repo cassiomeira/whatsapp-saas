@@ -9,15 +9,15 @@ import { incrementIxcMetric } from "./db";
 export function detectarDocumento(mensagem: string): string | null {
   // Remover tudo que não é número
   const numeros = mensagem.replace(/\D/g, "");
-  
+
   console.log(`[IXC AI Helper] detectarDocumento - mensagem: "${mensagem}", números extraídos: "${numeros}", length: ${numeros.length}`);
-  
+
   // CPF tem 11 dígitos, CNPJ tem 14
   if (numeros.length === 11 || numeros.length === 14) {
     console.log(`[IXC AI Helper] ✅ Documento detectado: ${numeros}`);
     return numeros;
   }
-  
+
   console.log(`[IXC AI Helper] ❌ Documento não detectado (length: ${numeros.length}, esperado: 11 ou 14)`);
   return null;
 }
@@ -49,7 +49,7 @@ export function detectarIntencaoIXC(mensagem: string): {
     "internet", "conexão", "bloqueado", "bloqueio",
     "confiança", "confian", "acesso", "me liberar", "me desbloquear"
   ];
-  
+
   // Frases específicas que indicam desbloqueio
   const frasesDesbloqueio = [
     "paguei minha conta",
@@ -68,7 +68,7 @@ export function detectarIntencaoIXC(mensagem: string): {
     console.log(`[IXC AI Helper] Frase de desbloqueio detectada`);
     return { tipo: "desbloqueio", confianca: 0.95, documento };
   }
-  
+
   // Verificar desbloqueio por palavras-chave
   const matchDesbloqueio = palavrasDesbloqueio.filter(p => msg.includes(p)).length;
   if (matchDesbloqueio >= 1) {
@@ -134,14 +134,14 @@ export async function processarConsultaFatura(
 ): Promise<string> {
   try {
     console.log(`[IXC AI Helper] processarConsultaFatura chamado - workspaceId: ${workspaceId}, telefone: ${telefone}, documento: ${documento}`);
-    
+
     // Buscar configuração IXC do workspace
     const workspace = await db.getWorkspaceById(workspaceId);
     const metadata = workspace?.metadata as any;
 
     console.log(`[IXC AI Helper] Workspace encontrado:`, !!workspace);
-    console.log(`[IXC AI Helper] Metadata:`, metadata ? { 
-      temIxcApiUrl: !!metadata.ixcApiUrl, 
+    console.log(`[IXC AI Helper] Metadata:`, metadata ? {
+      temIxcApiUrl: !!metadata.ixcApiUrl,
       temIxcApiToken: !!metadata.ixcApiToken,
       ixcApiUrl: metadata.ixcApiUrl ? `${metadata.ixcApiUrl.substring(0, 20)}...` : 'não configurado'
     } : 'metadata é null');
@@ -159,7 +159,7 @@ export async function processarConsultaFatura(
       });
       return "No momento não consigo consultar sua fatura automaticamente. Vou transferir você para um atendente humano para que ele confirme essas informações, tudo bem?";
     }
-    
+
     console.log(`[IXC AI Helper] ✅ Configuração IXC encontrada!`);
 
     const ixcService = getIXCService({
@@ -182,7 +182,7 @@ export async function processarConsultaFatura(
 
     // Buscar cliente por documento (se fornecido) ou telefone
     let cliente = null;
-    
+
     if (documento) {
       console.log(`[IXC AI Helper] Buscando cliente por documento: ${documento}`);
       try {
@@ -191,7 +191,7 @@ export async function processarConsultaFatura(
         console.error(`[IXC AI Helper] Erro ao buscar por documento:`, error);
       }
     }
-    
+
     if (!cliente) {
       console.log(`[IXC AI Helper] Buscando cliente por telefone: ${telefone}`);
       try {
@@ -236,7 +236,7 @@ export async function processarConsultaFatura(
     // Classificar faturas entre vencidas (< hoje) e a vencer (>= hoje)
     const hoje = new Date();
     hoje.setHours(0, 0, 0, 0);
-    
+
     const faturasVencidas: IXCFatura[] = [];
     const faturasAVencer: IXCFatura[] = [];
 
@@ -246,11 +246,11 @@ export async function processarConsultaFatura(
         const [ano, mes, dia] = dataVencStr.split('-').map(Number);
         const dataVenc = new Date(ano, mes - 1, dia);
         dataVenc.setHours(0, 0, 0, 0);
-        
+
         const isVencida = dataVenc < hoje;
-        
+
         console.log(`[IXC AI Helper] Fatura ${fatura.id}: venc="${dataVencStr}" -> ${dataVenc.toLocaleDateString('pt-BR')} - Vencida: ${isVencida}`);
-        
+
         if (isVencida) {
           faturasVencidas.push(fatura);
         } else {
@@ -294,7 +294,7 @@ export async function processarConsultaFatura(
     }
 
     // Reutilizar workspace e metadata já obtidos no início da função
-    const ixcUrl = metadata?.ixcApiUrl || 'sis.netcartelecom.com.br';
+    const ixcUrl = metadata?.ixcApiUrl || 'sistema.provedor.com.br';
 
     // Baixar boletos e preparar para envio
     const boletosParaEnviar: Array<{ idFatura: number; pdfBase64: string; nomeArquivo: string }> = [];
@@ -316,18 +316,18 @@ export async function processarConsultaFatura(
         if (fatura.documento) {
           resposta += `   📄 Documento: ${fatura.documento}\n`;
         }
-        
+
         // Adicionar código de barras (linha digitável) se disponível
         const linhaDigitavel = (fatura as any).linha_digitavel;
         console.log(`[IXC AI Helper] Fatura ${fatura.id} - linha_digitavel:`, linhaDigitavel ? 'SIM' : 'NÃO', linhaDigitavel);
-        
+
         if (linhaDigitavel) {
           resposta += `   🔢 Código de Barras (Linha Digitável):\n`;
           resposta += `   ${linhaDigitavel}\n`;
         } else {
           resposta += `   ⚠️ Esta fatura não possui código de barras gerado.\n`;
         }
-        
+
         // Adicionar link do boleto se disponível
         const linkBoleto = (fatura as any).boleto || fatura.url_boleto;
         if (linkBoleto) {
@@ -337,9 +337,9 @@ export async function processarConsultaFatura(
           }
           resposta += `   🔗 Link do Boleto: ${linkCompleto}\n`;
         }
-        
+
         resposta += `\n`;
-        
+
         // Baixar boleto para enviar via WhatsApp
         try {
           console.log(`[IXC AI Helper] ========================================`);
@@ -351,7 +351,7 @@ export async function processarConsultaFatura(
             tamanhoPDF: resultadoBoleto.pdfBase64 ? resultadoBoleto.pdfBase64.length : 0,
             erro: resultadoBoleto.error
           });
-          
+
           if (resultadoBoleto.success && resultadoBoleto.pdfBase64) {
             boletosParaEnviar.push({
               idFatura: fatura.id,
@@ -415,7 +415,7 @@ export async function processarConsultaFatura(
     if (boletosParaEnviar.length > 0) {
       resposta += `\n📄 *Boleto(s) em anexo*\n\n`;
     }
-    
+
     if (faturasVencidas.length > 0) {
       resposta += `*Deseja realizar o desbloqueio de confiança?*\n\n`;
       resposta += `Digite *SIM* para desbloquear ou *NÃO* para cancelar.`;
@@ -439,7 +439,7 @@ export async function processarConsultaFatura(
         boletos: boletosParaEnviar
       });
     }
-    
+
     // Se não houver boletos, retornar apenas a mensagem
     console.log(`[IXC AI Helper] Nenhum boleto baixado, retornando apenas mensagem de texto`);
     await incrementIxcMetric(workspaceId, "consulta", true);
@@ -449,7 +449,7 @@ export async function processarConsultaFatura(
       conversationId,
       type: "consulta",
       status: "success",
-        message: `Consulta sem boleto (retorno texto) | vencidas=${faturasVencidas.length} | aVencer=${deveIncluirAVencer ? faturasAVencerConsideradas.length : 0} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
+      message: `Consulta sem boleto (retorno texto) | vencidas=${faturasVencidas.length} | aVencer=${deveIncluirAVencer ? faturasAVencerConsideradas.length : 0} | contatoId=${contactId ?? "?"} | tel=${telefone}`,
     });
     return resposta;
   } catch (error: any) {
@@ -499,7 +499,7 @@ export async function processarDesbloqueio(
 
     // Buscar cliente por documento (se fornecido) ou telefone
     let cliente = null;
-    
+
     if (documento) {
       console.log(`[IXC AI Helper] Buscando cliente por documento: ${documento}`);
       try {
@@ -508,7 +508,7 @@ export async function processarDesbloqueio(
         console.error(`[IXC AI Helper] Erro ao buscar por documento:`, error);
       }
     }
-    
+
     if (!cliente) {
       console.log(`[IXC AI Helper] Buscando cliente por telefone: ${telefone}`);
       try {
@@ -533,12 +533,12 @@ export async function processarDesbloqueio(
     console.log(`[IXC AI Helper] ========================================`);
     console.log(`[IXC AI Helper] Executando desbloqueio via TypeScript`);
     console.log(`[IXC AI Helper] Cliente: ${cliente.razao} (ID: ${cliente.id})`);
-    
+
     try {
       const resultado = await ixcService.executarDesbloqueioConfianca(cliente.id);
-      
+
       console.log(`[IXC AI Helper] Resultado do desbloqueio:`, resultado);
-      
+
       if (resultado.success) {
         console.log(`[IXC AI Helper] ✅ Desbloqueio executado com sucesso`);
         await incrementIxcMetric(workspaceId, "desbloqueio", true);

@@ -232,9 +232,9 @@
 
 
 ## BUG CRÍTICO - Status nunca muda para "Conectado"
-- [ ] Instâncias sempre aparecem como "Desconectado" mesmo após escanear QR Code
-- [ ] Sistema não recebe evento CONNECTION_UPDATE da Evolution API
-- [ ] Webhook precisa ser configurado ANTES de gerar QR Code
-- [ ] Adicionar polling automático para atualizar status das instâncias
-- [ ] Verificar se webhookHandler está processando CONNECTION_UPDATE corretamente
+- [x] Instâncias sempre aparecem como "Desconectado" mesmo após escanear QR Code
+- [x] Sistema não recebe evento CONNECTION_UPDATE da Evolution API
+- [x] Webhook precisa ser configurado ANTES de gerar QR Code
+- [x] Adicionar polling automático para atualizar status das instâncias
+- [x] Verificar se webhookHandler está processando CONNECTION_UPDATE corretamente
 

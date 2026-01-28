@@ -33,15 +33,15 @@ export async function handleEvolutionWebhook(req: Request, res: Response) {
     // Verificar API Key se fornecida (opcional, mas recomendado)
     const providedApiKey = (req.body as any).apikey || req.headers['apikey'] || req.headers['x-api-key'];
     const expectedApiKey = process.env.EVOLUTION_API_KEY || 'NetcarSecret2024';
-    
+
     // Se uma API Key foi fornecida, validar
     if (providedApiKey && providedApiKey !== expectedApiKey) {
       console.warn("[Webhook] Invalid API key provided:", providedApiKey);
       // Não rejeitar, apenas logar (algumas versões da Evolution API não enviam)
     }
-    
+
     const payload: WebhookPayload = req.body;
-    
+
     console.log("[Webhook] Received event:", payload.event);
     console.log("[Webhook] Full payload:", JSON.stringify(payload, null, 2));
 
@@ -49,12 +49,12 @@ export async function handleEvolutionWebhook(req: Request, res: Response) {
     if (payload.event === "messages.upsert" || payload.event === "MESSAGES_UPSERT") {
       await handleIncomingMessage(payload);
     }
-    
+
     // Atualizar status de conexão
     if (payload.event === "connection.update" || payload.event === "CONNECTION_UPDATE") {
       await handleConnectionUpdate(payload);
     }
-    
+
     // Atualizar QR Code quando for gerado (v2.2.3)
     if (payload.event === "qrcode.updated" || payload.event === "QRCODE_UPDATED") {
       await handleQRCodeUpdate(payload);
@@ -70,7 +70,7 @@ export async function handleEvolutionWebhook(req: Request, res: Response) {
 async function handleIncomingMessage(payload: WebhookPayload) {
   try {
     const { data, instance } = payload;
-    
+
     // Ignorar mensagens enviadas por nós
     if (data.key?.fromMe) {
       return;
@@ -80,7 +80,7 @@ async function handleIncomingMessage(payload: WebhookPayload) {
     if (!remoteJid) {
       return;
     }
-    
+
     // **FILTRO: Ignorar mensagens de grupos**
     // Grupos terminam com @g.us, conversas diretas com @s.whatsapp.net
     if (remoteJid.endsWith('@g.us')) {
@@ -88,9 +88,27 @@ async function handleIncomingMessage(payload: WebhookPayload) {
       return;
     }
 
-    // Extrair número do WhatsApp
-    const whatsappNumber = remoteJid.split("@")[0];
-    
+    // Extrair número do WhatsApp (resolvendo LID se necessário)
+    let whatsappNumber = remoteJid.split("@")[0];
+
+    // Verificar se é um LID (número muito longo e não começa com DDI padrão ou tem @lid explícito no JID)
+    // IDs de LID costumam ter 15+ dígitos
+    const isLid = remoteJid.includes("@lid") || whatsappNumber.length >= 15;
+
+    if (isLid) {
+      console.log(`[Webhook] LID detected: ${whatsappNumber}. remoteJid: ${remoteJid}. Attempting to resolve...`);
+      // Importar dinamicamente para evitar ciclo ou garantir acesso
+      const { resolveLidSync } = await import("./whatsappService");
+      const resolvedNumber = await resolveLidSync(instance, whatsappNumber, (data.key as any)?.participant);
+
+      if (resolvedNumber) {
+        console.log(`[Webhook] SUCCESS: Resolved LID ${whatsappNumber} -> ${resolvedNumber}`);
+        whatsappNumber = resolvedNumber;
+      } else {
+        console.warn(`[Webhook] FAILURE: Could not resolve LID ${whatsappNumber} via onWhatsApp.`);
+      }
+    }
+
     // Extrair texto e mídia da mensagem
     let messageText = "";
     let mediaUrl: string | undefined;
@@ -133,7 +151,7 @@ async function handleIncomingMessage(payload: WebhookPayload) {
 
     // Buscar instância no banco
     const dbInstance = await db.getWhatsappInstanceByKey(instance);
-    
+
     if (!dbInstance) {
       console.error("[Webhook] Instance not found:", instance);
       return;
@@ -142,7 +160,7 @@ async function handleIncomingMessage(payload: WebhookPayload) {
     // Buscar ou criar contato
     let contacts = await db.getContactsByWorkspace(dbInstance.workspaceId);
     let contact = contacts.find(c => c.whatsappNumber === whatsappNumber);
-    
+
     if (!contact) {
       const contactId = await db.createContact({
         workspaceId: dbInstance.workspaceId,
@@ -152,6 +170,21 @@ async function handleIncomingMessage(payload: WebhookPayload) {
       // Recarregar contatos
       contacts = await db.getContactsByWorkspace(dbInstance.workspaceId);
       contact = contacts.find(c => c.id === contactId);
+
+      // Tentar buscar foto de perfil para novo contato
+      if (contact) {
+        const { getWhatsAppClient, fetchAndSaveProfilePic } = await import("./whatsappService");
+        const sock = getWhatsAppClient(instance);
+        if (sock) {
+          console.log(`[Webhook] New contact created (${contact.id}). Attempting to fetch profile pic for ${remoteJid}...`);
+          // Usar o remoteJid original (mesmo se for LID) ou o número resolvido? 
+          // Baileys v6+ costuma aceitar o LID para buscar foto. Vamos tentar ambos se falhar.
+          const jidToFetch = remoteJid.includes("@") ? remoteJid : `${whatsappNumber}@s.whatsapp.net`;
+          fetchAndSaveProfilePic(sock, jidToFetch, contact.id).catch(err => console.error(`[Webhook] Error fetching profile pic for ${jidToFetch}:`, err));
+        } else {
+          console.warn(`[Webhook] Could not get WhatsApp client for instance ${instance} to fetch profile pic.`);
+        }
+      }
     }
 
     if (!contact) {
@@ -177,48 +210,38 @@ async function handleIncomingMessage(payload: WebhookPayload) {
       console.log("[Webhook] Image detected. Transferring to human attendant.");
       const transferMessage =
         "Vou transferir você para um atendente para continuar o atendimento. Aguarde só um instante, por favor.";
-      
-      // Tentar enviar mensagem via Evolution API se disponível
+
+
+
+
+      // Tentar encontrar conversa ativa para salvar a mensagem
       try {
-        const workspace = await db.getWorkspaceById(dbInstance.workspaceId);
-        if (workspace?.metadata) {
-          const metadata = workspace.metadata as any;
-          if (metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
-            const { getEvolutionService } = await import("./evolutionService");
-            const evolution = getEvolutionService({
-              apiUrl: metadata.evolutionApiUrl,
-              apiKey: metadata.evolutionApiKey,
-            });
-            await evolution.sendTextMessage(instance, whatsappNumber, transferMessage);
-          }
+        const conversations = await db.getConversationsByWorkspace(dbInstance.workspaceId);
+        let activeConv = conversations.find(c => c.contactId === contact.id);
+
+        if (!activeConv) {
+          const convId = await db.createConversation({
+            workspaceId: dbInstance.workspaceId,
+            contactId: contact.id,
+            instanceId: dbInstance.id,
+            status: "bot_handling"
+          });
+          activeConv = (await db.getConversationsByWorkspace(dbInstance.workspaceId)).find(c => c.id === convId);
         }
-      } catch (sendError) {
-        console.error("[Webhook] Failed to send image transfer message:", sendError);
-      }
-      
-      try {
-        await db.updateContactKanbanStatus(contact.id, "negotiating");
-      } catch (statusError) {
-        console.error("[Webhook] Failed to update contact status during image transfer:", statusError);
-      }
-      
-      // Salvar a mensagem no banco antes de retornar
-      try {
-        await db.createMessage({
-          workspaceId: dbInstance.workspaceId,
-          contactId: contact.id,
-          instanceId: dbInstance.id,
-          content: messageText,
-          direction: "incoming",
-          mediaUrl,
-          mediaType,
-          mediaBase64,
-          mediaMimeType,
-        });
+
+        if (activeConv) {
+          await db.createMessage({
+            conversationId: activeConv.id,
+            senderType: "contact",
+            content: messageText,
+            mediaUrl,
+            messageType: mediaType || "text",
+          });
+        }
       } catch (msgError) {
         console.error("[Webhook] Failed to save image message:", msgError);
       }
-      
+
       // Não processar a imagem com a IA
       return;
     }
@@ -244,10 +267,10 @@ async function handleIncomingMessage(payload: WebhookPayload) {
 async function handleQRCodeUpdate(payload: WebhookPayload) {
   try {
     const { instance, data } = payload;
-    
+
     // Buscar instância no banco
     const dbInstance = await db.getWhatsappInstanceByKey(instance);
-    
+
     if (!dbInstance) {
       return;
     }
@@ -255,7 +278,7 @@ async function handleQRCodeUpdate(payload: WebhookPayload) {
     // Na v2.2.3, o QR Code pode vir em data.qrcode ou data
     const qrCodeData = (data as any).qrcode || data;
     const qrCodeBase64 = qrCodeData?.base64 || qrCodeData?.code;
-    
+
     if (qrCodeBase64) {
       await db.updateWhatsappInstanceStatus(dbInstance.id, "connecting", undefined, qrCodeBase64);
       console.log(`[Webhook] QR Code updated for instance ${instance}`);
@@ -268,10 +291,10 @@ async function handleQRCodeUpdate(payload: WebhookPayload) {
 async function handleConnectionUpdate(payload: WebhookPayload) {
   try {
     const { instance, data } = payload;
-    
+
     // Buscar instância no banco
     const dbInstance = await db.getWhatsappInstanceByKey(instance);
-    
+
     if (!dbInstance) {
       return;
     }
@@ -283,56 +306,15 @@ async function handleConnectionUpdate(payload: WebhookPayload) {
       close: "disconnected",
       connecting: "connecting",
     };
-    
+
     const newStatus = statusMap[state] || "disconnected";
     await db.updateWhatsappInstanceStatus(dbInstance.id, newStatus);
-    
+
     console.log(`[Webhook] Instance ${instance} status updated to ${newStatus}`);
-    
-    // Se a instância conectou com sucesso, configurar webhook agora
-    if (state === "open" || newStatus === "connected") {
-      try {
-        const workspace = await db.getWorkspaceById(dbInstance.workspaceId);
-        if (workspace?.metadata) {
-          const metadata = workspace.metadata as any;
-          if (metadata?.webhookUrl && metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
-            const { getEvolutionService } = await import("./evolutionService");
-            const evolution = getEvolutionService({
-              apiUrl: metadata.evolutionApiUrl,
-              apiKey: metadata.evolutionApiKey,
-            });
-            
-            await evolution.setWebhook(instance, metadata.webhookUrl);
-            console.log(`[Webhook] Webhook configured for ${instance} after successful connection`);
-          }
-        }
-      } catch (webhookError: any) {
-        console.warn(`[Webhook] Failed to configure webhook after connection:`, webhookError.message);
-        // Não falhar se o webhook não configurar
-      }
-    }
-    
-    // Se a instância está conectando, configurar webhook imediatamente (para receber QR Code)
-    if (state === "connecting" || newStatus === "connecting") {
-      try {
-        const workspace = await db.getWorkspaceById(dbInstance.workspaceId);
-        if (workspace?.metadata) {
-          const metadata = workspace.metadata as any;
-          if (metadata?.webhookUrl && metadata?.evolutionApiUrl && metadata?.evolutionApiKey) {
-            const { getEvolutionService } = await import("./evolutionService");
-            const evolution = getEvolutionService({
-              apiUrl: metadata.evolutionApiUrl,
-              apiKey: metadata.evolutionApiKey,
-            });
-            
-            await evolution.setWebhook(instance, metadata.webhookUrl);
-            console.log(`[Webhook] Webhook configured for ${instance} during connection`);
-          }
-        }
-      } catch (webhookError: any) {
-        console.warn(`[Webhook] Failed to configure webhook during connection:`, webhookError.message);
-      }
-    }
+
+
+
+
   } catch (error) {
     console.error("[Webhook] Error handling connection update:", error);
   }
