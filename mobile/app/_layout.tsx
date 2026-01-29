@@ -10,41 +10,42 @@ import { StatusBar } from "expo-status-bar";
 import Constants from "expo-constants";
 
 export default function RootLayout() {
-    const [queryClient] = useState(() => new QueryClient());
-    // URL de Produção (Render) - Acessível de qualquer lugar
-    const baseUrl = "https://whatsapp-saas-7duy.onrender.com/api/trpc";
+    const [trpcClient] = useState(() => {
+        // Detectar IP da máquina automaticamente para funcionar no celular físico (Expo Go)
+        const localhost = Constants.expoConfig?.hostUri?.split(`:`)[0];
+        const baseUrl = localhost ? `http://${localhost}:3000/api/trpc` : "http://localhost:3000/api/trpc";
 
-    // URL Local (Desenvolvimento)
-    // const baseUrl = "http://192.168.100.2:3000/api/trpc";
+        // URL de Produção (comentada para debug)
+        // const baseUrl = "https://whatsapp-saas-7duy.onrender.com/api/trpc";
 
-    console.log(`[TRPC] Backend URL: ${baseUrl}`);
+        console.log(`[TRPC] Backend URL: ${baseUrl}`);
 
-    return trpc.createClient({
-        links: [
-            httpBatchLink({
-                url: baseUrl,
-                transformer: superjson,
-            }),
-        ],
+        return trpc.createClient({
+            links: [
+                httpBatchLink({
+                    url: baseUrl,
+                    transformer: superjson,
+                }),
+            ],
+        });
     });
-});
 
-return (
-    <trpc.Provider client={trpcClient} queryClient={queryClient}>
-        <QueryClientProvider client={queryClient}>
-            <StatusBar style="light" />
-            <Stack
-                screenOptions={{
-                    headerStyle: {
-                        backgroundColor: "#075E54", // Cor do WhatsApp
-                    },
-                    headerTintColor: "#fff",
-                    headerTitleStyle: {
-                        fontWeight: "bold",
-                    },
-                }}
-            />
-        </QueryClientProvider>
-    </trpc.Provider>
-);
+    return (
+        <trpc.Provider client={trpcClient} queryClient={queryClient}>
+            <QueryClientProvider client={queryClient}>
+                <StatusBar style="light" />
+                <Stack
+                    screenOptions={{
+                        headerStyle: {
+                            backgroundColor: "#075E54", // Cor do WhatsApp
+                        },
+                        headerTintColor: "#fff",
+                        headerTitleStyle: {
+                            fontWeight: "bold",
+                        },
+                    }}
+                />
+            </QueryClientProvider>
+        </trpc.Provider>
+    );
 }
