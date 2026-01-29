@@ -734,10 +734,14 @@ export const appRouter = router({
         status: z.string().optional(),
       }).optional())
       .query(async ({ ctx, input }) => {
-        if (!ctx.user.workspaceId) {
+        console.log(`[TRPC] conversations.list call - User: ${ctx.user?.name} (ID: ${ctx.user?.id}), Workspace: ${ctx.user?.workspaceId}, Input:`, input);
+        if (!ctx.user?.workspaceId) {
+          console.warn("[TRPC] conversations.list - No workspace found for user");
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
-        return db.getConversationsByWorkspace(ctx.user.workspaceId, input?.status);
+        const results = await db.getConversationsByWorkspace(ctx.user.workspaceId, input?.status);
+        console.log(`[TRPC] conversations.list - Found ${results.length} conversations for workspace ${ctx.user.workspaceId}`);
+        return results;
       }),
 
     // Assumir conversa
@@ -2207,6 +2211,12 @@ export const appRouter = router({
           }
           return db.getCampaignAudienceMembers(ctx.user.workspaceId, input.audienceId);
         }),
+    }),
+  }),
+
+  users: router({
+    me: protectedProcedure.query(async ({ ctx }) => {
+      return ctx.user;
     }),
   }),
 

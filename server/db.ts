@@ -37,6 +37,12 @@ import {
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
+export type User = typeof users.$inferSelect;
+export type Workspace = typeof workspaces.$inferSelect;
+export type Contact = typeof contacts.$inferSelect;
+export type Conversation = typeof conversations.$inferSelect;
+export type Message = typeof messages.$inferSelect;
+
 let _db: ReturnType<typeof drizzle> | null = null;
 
 export function normalizePhone(raw: string): string {
@@ -176,6 +182,16 @@ export async function getUsersCount(): Promise<number> {
 
   const result = await db.select({ count: sql<number>`count(*)` }).from(users);
   return result?.[0]?.count ?? 0;
+}
+
+export async function getFirstUser(): Promise<User | null> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get first user: database not available");
+    return null;
+  }
+  const result = await db.select().from(users).limit(1);
+  return result[0] ?? null;
 }
 
 // Workspace functions
@@ -914,17 +930,33 @@ export async function getConversationsByWorkspace(workspaceId: number, status?: 
   const db = await getDb();
   if (!db) return [];
 
+  let filters = eq(conversations.workspaceId, workspaceId);
   if (status) {
-    return db.select().from(conversations)
-      .where(and(
-        eq(conversations.workspaceId, workspaceId),
-        eq(conversations.status, status as any)
-      ))
-      .orderBy(desc(conversations.lastMessageAt));
+    filters = and(filters, eq(conversations.status, status as any)) as any;
   }
 
-  return db.select().from(conversations)
-    .where(eq(conversations.workspaceId, workspaceId))
+  return db
+    .select({
+      id: conversations.id,
+      workspaceId: conversations.workspaceId,
+      contactId: conversations.contactId,
+      instanceId: conversations.instanceId,
+      status: conversations.status,
+      assignedToId: conversations.assignedToId,
+      lastMessageAt: conversations.lastMessageAt,
+      createdAt: conversations.createdAt,
+      updatedAt: conversations.updatedAt,
+      contact: {
+        id: contacts.id,
+        name: contacts.name,
+        whatsappNumber: contacts.whatsappNumber,
+        profilePicUrl: contacts.profilePicUrl,
+        metadata: contacts.metadata,
+      }
+    })
+    .from(conversations)
+    .innerJoin(contacts, eq(conversations.contactId, contacts.id))
+    .where(filters)
     .orderBy(desc(conversations.lastMessageAt));
 }
 

@@ -1,0 +1,16 @@
+
+import "dotenv/config";
+import { getWhatsAppClient } from "./whatsappService";
+import { getContactsByWorkspace, getWhatsappInstancesByWorkspace, updateContactWhatsappNumber, updateContactName } from "./db";
+import { activeSockets } from "./whatsappService";
+import { db } from "./db"; // We might need direct DB access if helpers fail
+import { contacts } from "../drizzle/schema"; // direct table access
+import { eq } from "drizzle-orm";
+
+// Mocking activeSockets since it's in memory in the main process, failing that we need to hit the running server
+// Actually, running a standalone script won't have access to the main server's 'activeSockets'.
+// This approach of a standalone script won't work for resolving because it needs the websocket.
+
+// STRATEGY CHANGE: 
+// instead of a standalone script, I will add a temporary 'setInterval' in the main `whatsappService.ts` 
+// that runs ONCE 10 seconds after startup to force-scan the DB and resolve everyone.

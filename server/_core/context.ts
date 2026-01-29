@@ -2,6 +2,7 @@ import type { CreateExpressContextOptions } from "@trpc/server/adapters/express"
 import type { User } from "../../drizzle/schema";
 import * as db from "../db";
 import { extractSupabaseToken, getSupabaseUser, type SupabaseUser } from "./supabase";
+import { ENV } from "./env";
 
 async function ensureWorkspaceForUser(user: User, supabaseUser: SupabaseUser): Promise<User> {
   if (user.workspaceId) {
@@ -101,6 +102,16 @@ export async function createContext(
   } catch (error) {
     console.error("[Auth] Failed to authenticate Supabase user:", error);
     user = null;
+  }
+
+  // Atalho para desenvolvimento: se não houver usuário autenticado e estivermos rodando localmente
+  if (!user && !ENV.isProduction) {
+    user = await db.getFirstUser();
+    if (user) {
+      console.log(`[Auth][DEV] Bypassing auth: using user ${user.name} (${user.id})`);
+    } else {
+      console.warn("[Auth][DEV] Bypass failed: no users found in database.");
+    }
   }
 
   return {

@@ -8,6 +8,7 @@ import { createContext } from "./context";
 import { handleEvolutionWebhook } from "../webhookHandler";
 import { initAuxTables } from "../db";
 import { serveStatic, setupVite } from "./vite";
+import cors from "cors";
 
 process.on("uncaughtException", (error) => {
   console.error("[Fatal] Uncaught Exception:", error);
@@ -46,10 +47,20 @@ async function startServer() {
 
   const app = express();
   const server = createServer(app);
+
+  // LOG DE REQUISIÇÕES (PARA DEBUG)
+  app.use((req, res, next) => {
+    console.log(`[Incoming] ${req.method} ${req.url} from ${req.ip}`);
+    next();
+  });
+
+  // Enable CORS (Permissive)
+  app.use(cors({ origin: "*" }));
+
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  
+
   // Healthcheck endpoint (used by Docker/Render)
   app.get("/api/health", (_req, res) => {
     res.status(200).json({ status: "ok" });
@@ -57,7 +68,7 @@ async function startServer() {
 
   // Evolution API Webhook - MUST be before OAuth routes
   app.post("/api/webhook/evolution", handleEvolutionWebhook);
-  
+
   // tRPC API
   app.use(
     "/api/trpc",
@@ -82,7 +93,7 @@ async function startServer() {
 
   server.listen(port, async () => {
     console.log(`Server running on http://localhost:${port}/`);
-    
+
     // Limpar disk antes de inicializar (para evitar SQLITE_FULL)
     try {
       const { runCleanup } = await import("../cleanupDisk");
@@ -90,7 +101,7 @@ async function startServer() {
     } catch (error) {
       console.warn("[Server] Error running cleanup (non-fatal):", error);
     }
-    
+
     // Inicializar instâncias WhatsApp existentes
     try {
       const { initializeExistingInstances } = await import("../whatsappService");
