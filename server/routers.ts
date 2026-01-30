@@ -795,9 +795,13 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
 
-        const buffer = Buffer.from(input.fileData, "base64");
+        let buffer = Buffer.from(input.fileData, "base64");
         const extension = input.fileName.split('.').pop()?.toLowerCase() || '';
         let mediaType: "image" | "audio" | "video" | "document" = "document";
+        let finalFileName = input.fileName;
+        let finalContentType = input.fileType || `application/octet-stream`;
+
+        console.log(`[Media] Upload request - File: ${input.fileName}, Extension: ${extension}, Type: ${input.fileType}, Size: ${input.fileSize}`);
 
         if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension)) {
           mediaType = "image";
@@ -807,7 +811,27 @@ export const appRouter = router({
           mediaType = "video";
         }
 
-        const contentType = input.fileType || `application/octet-stream`;
+        console.log(`[Media] Detected media type: ${mediaType}`);
+
+        // Convert WebM videos to MP4 for WhatsApp compatibility
+        if (mediaType === "video" && extension === "webm") {
+          console.log("[Media] WebM video detected - starting conversion to MP4...");
+          try {
+            console.log("[Media] Converting WebM to MP4 for WhatsApp compatibility...");
+            const { convertWebMToMP4 } = await import("./videoConverter");
+            buffer = await convertWebMToMP4(buffer);
+            finalFileName = finalFileName.replace(/\.webm$/i, ".mp4");
+            finalContentType = "video/mp4";
+            console.log("[Media] Video conversion completed successfully");
+          } catch (conversionError) {
+            console.error("[Media] Video conversion failed:", conversionError);
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Failed to convert video for WhatsApp compatibility",
+            });
+          }
+        }
+
         let mediaUrl: string | undefined;
 
         // Usar Supabase Storage
@@ -835,11 +859,11 @@ export const appRouter = router({
               }
             }
 
-            const filePath = `workspaces/${ctx.user.workspaceId}/media/${Date.now()}-${input.fileName}`;
+            const filePath = `workspaces/${ctx.user.workspaceId}/media/${Date.now()}-${finalFileName}`;
             const { data, error } = await supabase.storage
               .from(bucketName)
               .upload(filePath, buffer, {
-                contentType,
+                contentType: finalContentType,
                 upsert: false,
               });
 
@@ -853,7 +877,7 @@ export const appRouter = router({
               .getPublicUrl(filePath);
 
             console.log(`[Messages] Media uploaded to Supabase Storage: ${urlData.publicUrl}`);
-            return { mediaUrl: urlData.publicUrl, mediaType, fileName: input.fileName };
+            return { mediaUrl: urlData.publicUrl, mediaType, fileName: finalFileName };
           } catch (supabaseError: any) {
             console.error("[Messages] Supabase Storage failed:", supabaseError.message || supabaseError);
             throw new TRPCError({

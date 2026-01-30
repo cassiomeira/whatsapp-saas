@@ -753,6 +753,14 @@ export async function sendMediaMessage(
     payload.image = { url: mediaUrl };
   } else if (mediaType === "video") {
     payload.video = { url: mediaUrl };
+    // Detectar mimetype correto baseado na extensão
+    if (mediaUrl.endsWith(".mp4")) {
+      payload.mimetype = "video/mp4";
+    } else if (mediaUrl.endsWith(".webm")) {
+      payload.mimetype = "video/webm";
+    } else {
+      payload.mimetype = "video/mp4"; // Padrão
+    }
   } else if (mediaType === "audio") {
     payload.audio = { url: mediaUrl };
     // Detectar mimetype correto base na extensão

@@ -26,7 +26,7 @@ export async function setupVite(app: Express, server: Server) {
 
     try {
       const clientTemplate = path.resolve(
-        import.meta.dirname,
+        __dirname,
         "../..",
         "client",
         "index.html"
@@ -48,8 +48,8 @@ export async function setupVite(app: Express, server: Server) {
 
 export function serveStatic(app: Express) {
   const distCandidates = [
-    path.resolve(import.meta.dirname, "../../dist/public"),
-    path.resolve(import.meta.dirname, "../dist/public"),
+    path.resolve(__dirname, "../../dist/public"),
+    path.resolve(__dirname, "../dist/public"),
     path.resolve(process.cwd(), "dist/public"),
     path.resolve(process.cwd(), "../dist/public"),
   ];

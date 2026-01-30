@@ -19,7 +19,8 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus, Paperclip, Mic, StopCircle } from "lucide-react";
+import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus, Paperclip, Mic, StopCircle, Camera } from "lucide-react";
+import CameraCapture from "@/components/CameraCapture";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -802,6 +803,7 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [isFFmpegLoading, setIsFFmpegLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -913,6 +915,12 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
     setSelectedFile(null);
     setFilePreview(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleCameraCapture = (file: File, type: "image" | "video") => {
+    setSelectedFile(file);
+    setFilePreview(URL.createObjectURL(file));
+    toast.success(`${type === "image" ? "Foto capturada" : "Vídeo gravado"} com sucesso!`);
   };
 
   const loadFFmpeg = useCallback(async (): Promise<FFmpeg | null> => {
@@ -1438,6 +1446,15 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
           >
             <Paperclip className="w-4 h-4" />
           </Button>
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={() => setIsCameraOpen(true)}
+            disabled={isRecording}
+            title="Tirar foto ou gravar vídeo"
+          >
+            <Camera className="w-4 h-4" />
+          </Button>
           {isRecording ? (
             <Button size="icon" variant="destructive" onClick={stopRecording}>
               <StopCircle className="w-4 h-4" />
@@ -1462,8 +1479,12 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
         </div>
       </div>
 
-
+      {/* Camera Capture Modal */}
+      <CameraCapture
+        open={isCameraOpen}
+        onClose={() => setIsCameraOpen(false)}
+        onCapture={handleCameraCapture}
+      />
     </>
   );
 }
-
