@@ -104,15 +104,16 @@ export async function createContext(
     user = null;
   }
 
-  // Atalho para desenvolvimento: se não houver usuário autenticado e estivermos rodando localmente
-  if (!user && !ENV.isProduction) {
-    user = await db.getFirstUser();
-    if (user) {
-      console.log(`[Auth][DEV] Bypassing auth: using user ${user.name} (${user.id})`);
-    } else {
-      console.warn("[Auth][DEV] Bypass failed: no users found in database.");
-    }
-  }
+  // Atalho para desenvolvimento DESABILITADO a pedido do usuário
+  // Para permitir logout e troca de usuários em localhost
+  // if (!user && !ENV.isProduction) {
+  //   user = await db.getFirstUser();
+  //   if (user) {
+  //     console.log(`[Auth][DEV] Bypassing auth: using user ${user.name} (${user.id})`);
+  //   } else {
+  //     console.warn("[Auth][DEV] Bypass failed: no users found in database.");
+  //   }
+  // }
 
   return {
     req: opts.req,
