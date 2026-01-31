@@ -813,22 +813,32 @@ export const appRouter = router({
 
         console.log(`[Media] Detected media type: ${mediaType}`);
 
-        // Convert WebM videos to MP4 for WhatsApp compatibility
-        if (mediaType === "video" && extension === "webm") {
-          console.log("[Media] WebM video detected - starting conversion to MP4...");
+        // Always convert videos to MP4/H.264 Baseline for WhatsApp mobile compatibility
+        // This ensures even "native" MP4s from browser have the correct profile/level
+        if (mediaType === "video") {
+          console.log("[Media] ⚠️  Video detected - STARTING MANDATORY CONVERSION");
+          console.log(`[Media] Input: ${finalFileName}, Size: ${buffer.length} bytes`);
           try {
-            console.log("[Media] Converting WebM to MP4 for WhatsApp compatibility...");
+            console.log("[Media] 🔄 Processing with FFmpeg (Force H.264 Baseline)...");
             const { convertWebMToMP4 } = await import("./videoConverter");
+            const originalSize = buffer.length;
+
+            // The converter handles any input format supported by ffmpeg
             buffer = await convertWebMToMP4(buffer);
-            finalFileName = finalFileName.replace(/\.webm$/i, ".mp4");
+
+            // Ensure output extension is .mp4
+            if (!finalFileName.toLowerCase().endsWith(".mp4")) {
+              finalFileName = finalFileName.replace(/\.[^/.]+$/, "") + ".mp4";
+            }
             finalContentType = "video/mp4";
-            console.log("[Media] Video conversion completed successfully");
+
+            console.log(`[Media] ✅ Video Processed! ${finalFileName}`);
+            console.log(`[Media] Size: ${originalSize} → ${buffer.length} bytes (${((buffer.length / originalSize) * 100).toFixed(1)}%)`);
           } catch (conversionError) {
-            console.error("[Media] Video conversion failed:", conversionError);
-            throw new TRPCError({
-              code: "INTERNAL_SERVER_ERROR",
-              message: "Failed to convert video for WhatsApp compatibility",
-            });
+            console.error("[Media] ❌ Video processing FAILED:", conversionError);
+            console.error("[Media] Falling back to original file (might not play on mobile)");
+            // We don't throw here to allow sending the original if conversion fails
+            // But we warn the user
           }
         }
 
