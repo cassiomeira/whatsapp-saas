@@ -19,7 +19,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus, Paperclip, Mic, StopCircle, Camera } from "lucide-react";
+import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus, Paperclip, Mic, StopCircle, Camera, Smile } from "lucide-react";
 import CameraCapture from "@/components/CameraCapture";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -804,10 +804,12 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
   const [filePreview, setFilePreview] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isFFmpegLoading, setIsFFmpegLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const ffmpegRef = useRef<FFmpeg | null>(null);
@@ -1278,6 +1280,10 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
 
       setMessage("");
       removeFile();
+      // Resetar altura do textarea
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
       refetch();
     } catch (error) {
       toast.error("Erro ao enviar mensagem/mídia");
@@ -1305,7 +1311,7 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
                   }`}
               >
                 <div
-                  className={`max-w-[80%] rounded-lg p-3 group relative ${msg.senderType === "contact"
+                  className={`max-w-[80%] rounded-lg p-3 group relative break-words whitespace-pre-wrap ${msg.senderType === "contact"
                     ? "bg-muted"
                     : "bg-primary text-primary-foreground"
                     }`}
@@ -1418,11 +1424,44 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
           </div>
         )}
 
-        <div className="flex gap-2">
-          <Input
+        {/* Emoji Picker */}
+        {showEmojiPicker && (
+          <div className="mb-2 p-2 border rounded-md bg-background">
+            <p className="text-xs text-muted-foreground mb-2">Clique para inserir:</p>
+            <div className="grid grid-cols-8 gap-1">
+              {[
+                "😊", "😂", "❤️", "👍", "👏", "🙏", "✅", "❌",
+                "🔥", "⭐", "💯", "🎉", "😍", "🤔", "🤝", "☝️",
+                "💼", "👆", "🙌", "💪", "📱", "📞", "💚", "😅"
+              ].map((emoji) => (
+                <button
+                  key={emoji}
+                  className="text-2xl hover:bg-accent p-1 rounded transition-colors"
+                  onClick={() => {
+                    setMessage(message + emoji);
+                    setShowEmojiPicker(false);
+                  }}
+                  type="button"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {/* Campo de texto - largura total */}
+          <textarea
+            ref={textareaRef}
             placeholder="Digite sua mensagem..."
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => {
+              setMessage(e.target.value);
+              // Auto-resize
+              e.target.style.height = 'auto';
+              e.target.style.height = Math.min(e.target.scrollHeight, 144) + 'px'; // Max 6 linhas (~24px cada)
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -1430,52 +1469,67 @@ function ChatPanel({ contactId, handleImagePreview }: { contactId: number, handl
               }
             }}
             disabled={isRecording}
+            className="w-full min-h-[40px] max-h-[144px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            rows={1}
           />
-          <input
-            type="file"
-            ref={fileInputRef}
-            className="hidden"
-            onChange={handleFileChange}
-            accept="image/*,audio/*,video/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
-          />
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isRecording}
-          >
-            <Paperclip className="w-4 h-4" />
-          </Button>
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => setIsCameraOpen(true)}
-            disabled={isRecording}
-            title="Tirar foto ou gravar vídeo"
-          >
-            <Camera className="w-4 h-4" />
-          </Button>
-          {isRecording ? (
-            <Button size="icon" variant="destructive" onClick={stopRecording}>
-              <StopCircle className="w-4 h-4" />
+
+          {/* Botões embaixo */}
+          <div className="flex gap-2 justify-end">
+            <input
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
+              onChange={handleFileChange}
+              accept="image/*,audio/*,video/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
+            />
+            <Button
+              size="icon"
+              variant={showEmojiPicker ? "default" : "outline"}
+              onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+              disabled={isRecording}
+              title="Emojis"
+            >
+              <Smile className="w-4 h-4" />
             </Button>
-          ) : (
             <Button
               size="icon"
               variant="outline"
-              onClick={startRecording}
-              disabled={selectedFile !== null}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isRecording}
             >
-              <Mic className="w-4 h-4" />
+              <Paperclip className="w-4 h-4" />
             </Button>
-          )}
-          <Button
-            size="icon"
-            onClick={handleSend}
-            disabled={(!message.trim() && !selectedFile) || isRecording}
-          >
-            <Send className="w-4 h-4" />
-          </Button>
+            <Button
+              size="icon"
+              variant="outline"
+              onClick={() => setIsCameraOpen(true)}
+              disabled={isRecording}
+              title="Tirar foto ou gravar vídeo"
+            >
+              <Camera className="w-4 h-4" />
+            </Button>
+            {isRecording ? (
+              <Button size="icon" variant="destructive" onClick={stopRecording}>
+                <StopCircle className="w-4 h-4" />
+              </Button>
+            ) : (
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={startRecording}
+                disabled={selectedFile !== null}
+              >
+                <Mic className="w-4 h-4" />
+              </Button>
+            )}
+            <Button
+              size="icon"
+              onClick={handleSend}
+              disabled={(!message.trim() && !selectedFile) || isRecording}
+            >
+              <Send className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
       </div>
 

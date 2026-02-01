@@ -303,7 +303,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
     // Otimizações para estabilidade
     generateHighQualityLinkPreview: true,
     browser: ["WhatsApp SaaS", "Chrome", "10.0.0"],
-    syncFullHistory: false, // Evitar sync lento inicial
+    syncFullHistory: true, // Sincronizar histórico recente (última semana)
   });
 
   // Mapa para guardar QR code temporariamente até ser consumido ou expirado
@@ -426,6 +426,97 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
     }
   });
 
+  // Gerenciamento de Histórico (Backfill de mensagens antigas)
+  sock.ev.on("messaging-history.set", async ({ chats, contacts, messages, isLatest }) => {
+    try {
+      const dbInstance = await db.getWhatsappInstanceByKey(instanceKey);
+      if (!dbInstance) return;
+
+      console.log(`[WhatsApp] History sync received for ${instanceKey}: ${messages.length} messages, ${chats.length} chats, ${contacts.length} contacts`);
+
+      // Filtrar apenas mensagens do último mês (30 dias)
+      const oneMonthAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+      const recentMessages = messages.filter(msg => {
+        const timestamp = (typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp : msg.messageTimestamp?.low || 0) * 1000;
+        return timestamp >= oneMonthAgo;
+      });
+
+      console.log(`[WhatsApp] Filtered to ${recentMessages.length} messages from last 30 days`);
+
+      // Processar mensagens recentes
+      for (const msg of recentMessages) {
+        if (!msg.message) continue;
+
+        const isFromMe = msg.key.fromMe;
+        const remoteJid = msg.key.remoteJid;
+
+        if (!remoteJid || remoteJid === "status@broadcast") continue;
+        if (remoteJid.includes("@g.us")) continue; // Ignorar grupos
+
+        let jidUser = remoteJid.split("@")[0];
+        let whatsappNumber = jidUser;
+
+        // Priorizar senderPn
+        const senderPn = (msg as any).senderPn || (msg.key as any).senderPn;
+        if (senderPn) {
+          whatsappNumber = senderPn.split("@")[0];
+          jidUser = whatsappNumber;
+        }
+
+        const contactName = msg.pushName || whatsappNumber;
+
+        // Buscar/Criar contato
+        let contact = await db.getContactByNumber(dbInstance.workspaceId, whatsappNumber);
+        if (!contact) {
+          const contactId = await db.createContact({
+            workspaceId: dbInstance.workspaceId,
+            whatsappNumber,
+            name: contactName,
+            metadata: {
+              whatsappJid: remoteJid,
+              whatsappLid: remoteJid.endsWith("@lid") ? remoteJid : undefined,
+              pushName: msg.pushName
+            }
+          });
+          contact = await db.getContactByNumber(dbInstance.workspaceId, whatsappNumber);
+        }
+
+        if (!contact) continue;
+
+        // Buscar ou criar conversa
+        let conversation = await db.getConversationByContact(dbInstance.workspaceId, contact.id);
+        if (!conversation) {
+          const newConvId = await db.createConversation({
+            contactId: contact.id,
+            instanceId: dbInstance.id,
+            workspaceId: dbInstance.workspaceId,
+            status: 'bot_handling'
+          });
+          conversation = { id: newConvId } as any;
+        }
+
+        // Extrair conteúdo da mensagem
+        const messageType = Object.keys(msg.message)[0];
+        const content = msg.message[messageType as keyof typeof msg.message] as any;
+        const body = content?.text || content?.caption || msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
+
+        // Salvar mensagem
+        await db.createMessage({
+          conversationId: conversation!.id,
+          content: body || "(Mensagem sem texto)",
+          senderType: isFromMe ? "agent" : "contact",
+          sentAt: new Date((typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp : msg.messageTimestamp?.low || 0) * 1000),
+          whatsappMessageId: msg.key.id,
+          messageType: 'text'
+        });
+      }
+
+      console.log(`[WhatsApp] History sync completed for ${instanceKey}`);
+    } catch (err) {
+      console.error("[WhatsApp] Error in messaging-history.set:", err);
+    }
+  });
+
   // Gerenciamento de Mensagens
   sock.ev.on("messages.upsert", async (m) => {
     try {
@@ -441,8 +532,9 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         if (remoteJid.includes("@g.us")) continue; // Ignorar grupos por enquanto
 
         if (isFromMe) {
-          // Pode ser útil no futuro para sincronizar mensagens enviadas pelo celular
-          continue;
+          // Ajuste: Vamos processar mensagens enviadas pelo celular APENAS para salvar no histórico
+          // A lógica de salvamento será feita mais abaixo (sem chamar a IA)
+          console.log(`[WhatsApp] Message from ME detected (${remoteJid}). Will sync to history.`);
         }
 
         console.log(`[WhatsApp] New message from ${remoteJid}`);
@@ -568,11 +660,26 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
 
         if (!contact) continue;
 
-        // Atualizar status para não lido
-        await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
-          ...metadata,
-          unread: true,
-        }));
+        // Buscar ou Criar Conversa (Necessário para salvar mensagem enviada pelo celular)
+        let conversation = await db.getConversationByContact(dbInstance.workspaceId, contact.id);
+        if (!conversation) {
+          const newConvId = await db.createConversation({
+            contactId: contact.id,
+            instanceId: dbInstance.id,
+            workspaceId: dbInstance.workspaceId,
+            status: 'bot_handling' // Default status
+          });
+          // Reconstruir objeto mínimo necessário ou buscar novamente
+          conversation = { id: newConvId } as any;
+        }
+
+        // Atualizar status para não lido SOMENTE SE NÃO FOR MINHA MENSAGEM
+        if (!isFromMe) {
+          await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
+            ...metadata,
+            unread: true,
+          }));
+        }
 
         // Baixar mídia se houver
         let mediaUrl: string | undefined;
@@ -617,7 +724,24 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
 
         console.log(`[WhatsApp] Processing message from ${whatsappNumber}: ${body.substring(0, 50)}...`);
 
-        // Chamar IA
+        // Se a mensagem é MINHA (enviada pelo celular), salvar como "agent" e NÃO chamar a IA
+        if (isFromMe) {
+          console.log(`[WhatsApp] Syncing sent message from device (isFromMe=true)`);
+
+          await db.createMessage({
+            conversationId: conversation!.id,
+            content: body || (mediaUrl ? `[${mediaType}]` : ""),
+            senderType: "agent", // Marcar como enviado por "agente" (usuário real)
+            sentAt: new Date(),
+            whatsappMessageId: msg.key.id, // Coluna top-level correta
+            mediaUrl,
+            messageType: mediaType || 'text'
+          });
+
+          continue; // IMPORTANTE: Parar aqui para não chamar a IA
+        }
+
+        // Chamar IA apenas para mensagens de terceiros
         await processIncomingMessage(
           dbInstance.workspaceId,
           contact.id,
@@ -797,6 +921,38 @@ export async function deleteMessage(instanceKey: string, number: string, message
       participant: undefined // usado para grupos
     }
   });
+}
+
+/**
+ * Buscar histórico de mensagens de um chat específico
+ */
+export async function fetchChatHistory(
+  instanceKey: string,
+  remoteJid: string,
+  limit: number = 50
+): Promise<any[]> {
+  const sock = activeSockets.get(instanceKey);
+  if (!sock) throw new Error("Instance not connected");
+
+  try {
+    console.log(`[WhatsApp] Fetching history for ${remoteJid}, limit: ${limit}`);
+
+    // Usar fetchMessagesFromWA do Baileys (função interna)
+    // Nota: Baileys não expõe diretamente fetchMessageHistory como API pública
+    // Vamos usar um workaround: buscar do histórico local do socket se disponível
+
+    // Alternativa: usar chatModify para solicitar histórico (não funciona bem)
+    // Melhor: processar do histórico já sincronizado via messaging-history.set
+
+    // Por limitações do Baileys, vamos retornar vazio por enquanto
+    // e documentar que o histórico principal vem do sync automático
+    console.log(`[WhatsApp] Note: fetchChatHistory is limited by Baileys API. Use messaging-history.set for bulk sync.`);
+
+    return [];
+  } catch (err) {
+    console.error(`[WhatsApp] Error fetching chat history for ${remoteJid}:`, err);
+    throw err;
+  }
 }
 
 /**
