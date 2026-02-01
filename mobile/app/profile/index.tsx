@@ -1,7 +1,7 @@
 import { View, Text, TouchableOpacity, Image, Alert } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import { trpc } from "../../lib/trpc";
-import { LogOut, User as UserIcon, Building2 } from "lucide-react-native";
+import { LogOut, User as UserIcon, Building2, Settings as SettingsIcon } from "lucide-react-native";
 
 export default function ProfileScreen() {
     const router = useRouter();
@@ -61,8 +61,15 @@ export default function ProfileScreen() {
                 </View>
             </View>
 
-            {/* Actions */}
             <View className="mt-8 px-4">
+                <TouchableOpacity
+                    className="flex-row items-center justify-center bg-gray-100 p-4 rounded-lg mb-3"
+                    onPress={() => router.push("/settings/server")}
+                >
+                    <SettingsIcon size={20} color="#374151" />
+                    <Text className="ml-2 text-gray-700 font-bold text-lg">Configurar Servidor</Text>
+                </TouchableOpacity>
+
                 <TouchableOpacity
                     className="flex-row items-center justify-center bg-red-50 p-4 rounded-lg border border-red-100"
                     onPress={handleLogout}

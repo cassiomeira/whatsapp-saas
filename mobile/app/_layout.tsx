@@ -8,27 +8,34 @@ import superjson from "superjson";
 import { StatusBar } from "expo-status-bar";
 
 import Constants from "expo-constants";
+import { getServerUrl } from "../lib/storage";
 
 export default function RootLayout() {
-    const [trpcClient] = useState(() => {
-        // Detectar IP da máquina automaticamente para funcionar no celular físico (Expo Go)
-        const localhost = Constants.expoConfig?.hostUri?.split(`:`)[0];
-        const baseUrl = localhost ? `http://${localhost}:3000/api/trpc` : "http://localhost:3000/api/trpc";
+    const [queryClient] = useState(() => new QueryClient());
+    const [trpcClient, setTrpcClient] = useState<any>(null);
+    const [queryClient] = useState(() => new QueryClient());
 
-        // URL de Produção (comentada para debug)
-        // const baseUrl = "https://whatsapp-saas-7duy.onrender.com/api/trpc";
+    useEffect(() => {
+        const initClient = async () => {
+            const url = await getServerUrl();
+            console.log(`[TRPC] Inicializando com URL: ${url}`);
 
-        console.log(`[TRPC] Backend URL: ${baseUrl}`);
+            const client = trpc.createClient({
+                links: [
+                    httpBatchLink({
+                        url: url,
+                        transformer: superjson,
+                    }),
+                ],
+            });
+            setTrpcClient(client);
+        };
+        initClient();
+    }, []);
 
-        return trpc.createClient({
-            links: [
-                httpBatchLink({
-                    url: baseUrl,
-                    transformer: superjson,
-                }),
-            ],
-        });
-    });
+    if (!trpcClient) {
+        return null; // Ou um Loading Screen
+    }
 
     return (
         <trpc.Provider client={trpcClient} queryClient={queryClient}>

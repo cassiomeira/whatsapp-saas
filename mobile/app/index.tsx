@@ -29,6 +29,12 @@ export default function InboxScreen() {
                 >
                     <Text className="text-white font-bold">Tentar Novamente</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                    className="mt-4 p-2"
+                    onPress={() => router.push("/settings/server")}
+                >
+                    <Text className="text-gray-500 font-semibold">Configurar Servidor</Text>
+                </TouchableOpacity>
             </View>
         );
     }
