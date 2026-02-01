@@ -1,7 +1,7 @@
 import "../global.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink } from "@trpc/client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { trpc } from "../lib/trpc";
 import { Stack } from "expo-router";
 import superjson from "superjson";
@@ -13,7 +13,6 @@ import { getServerUrl } from "../lib/storage";
 export default function RootLayout() {
     const [queryClient] = useState(() => new QueryClient());
     const [trpcClient, setTrpcClient] = useState<any>(null);
-    const [queryClient] = useState(() => new QueryClient());
 
     useEffect(() => {
         const initClient = async () => {
