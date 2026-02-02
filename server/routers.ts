@@ -4,7 +4,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
-import { getWorkspaceIxcMetrics, getIxcEvents, getContactStatusEvents, getContactSla, deleteContactFully, deleteAllContacts, createContact, getContactByNumber, normalizePhone } from "./db";
+import { getWorkspaceIxcMetrics, getIxcEvents, getContactStatusEvents, getContactSla, deleteContactFully, deleteAllContacts, createContact, getContactByNumber, normalizePhone, getContact } from "./db";
 import { processIncomingMessage } from "./aiService";
 
 import { TRPCError } from "@trpc/server";
@@ -154,7 +154,7 @@ export const appRouter = router({
           if (!byContact[ev.contactId]) byContact[ev.contactId] = [];
           byContact[ev.contactId].push(ev);
         }
-        Object.values(byContact).forEach(list => list.sort((a, b) => a.changedAt - b.changedAt));
+        Object.values(byContact).forEach(list => list.sort((a, b) => Number(a.changedAt) - Number(b.changedAt)));
 
         const perStatus: Record<string, { totalSeconds: number; transitions: number }> = {};
         const perAttendant: Record<string, { totalSeconds: number; transitions: number }> = {};
@@ -162,10 +162,10 @@ export const appRouter = router({
         for (const list of Object.values(byContact)) {
           let lastStatus = list[0]?.statusFrom || list[0]?.statusTo || "desconhecido";
           let lastAssigned = list[0]?.assignedToId ?? null;
-          let lastTime = list[0]?.changedAt || now;
+          let lastTime = Number(list[0]?.changedAt || now);
 
           for (const ev of list) {
-            const duration = Math.max(0, ev.changedAt - lastTime);
+            const duration = Math.max(0, Number(ev.changedAt) - lastTime);
             const keyStatus = lastStatus;
             perStatus[keyStatus] = perStatus[keyStatus] || { totalSeconds: 0, transitions: 0 };
             perStatus[keyStatus].totalSeconds += duration;
@@ -178,7 +178,7 @@ export const appRouter = router({
 
             lastStatus = ev.statusTo;
             lastAssigned = ev.assignedToId ?? null;
-            lastTime = ev.changedAt;
+            lastTime = Number(ev.changedAt);
           }
 
           // tempo até agora no status atual
@@ -842,7 +842,8 @@ export const appRouter = router({
             const originalSize = buffer.length;
 
             // The converter handles any input format supported by ffmpeg
-            buffer = await convertWebMToMP4(buffer);
+            const conversionResult = await convertWebMToMP4(buffer);
+            buffer = Buffer.from(conversionResult);
 
             // Ensure output extension is .mp4
             if (!finalFileName.toLowerCase().endsWith(".mp4")) {
