@@ -9,6 +9,7 @@ import Dashboard from "./pages/Dashboard";
 import Inbox from "./pages/Inbox";
 import Contacts from "./pages/Contacts";
 import Kanban from "./pages/Kanban";
+import Groups from "./pages/Groups";
 import WhatsApp from "./pages/WhatsApp";
 import BotConfig from "./pages/BotConfig";
 import Flows from "./pages/Flows";
@@ -30,6 +31,7 @@ function Router() {
       <Route path={"/dashboard"} component={Dashboard} />
       <Route path={"/inbox"} component={Inbox} />
       <Route path={"/contacts"} component={Contacts} />
+      <Route path={"/groups"} component={Groups} />
       <Route path={"/kanban"} component={Kanban} />
       <Route path={"/whatsapp"} component={WhatsApp} />
       <Route path={"/products"} component={Products} />

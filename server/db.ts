@@ -391,28 +391,42 @@ async function ensureMessagesWhatsappIdColumn() {
     return;
   }
   const client = createClient({ url: process.env.DATABASE_URL });
+
+  // Garantir coluna whatsappMessageId
   try {
-    // Verificar se a coluna já existe
     const check = await client.execute(
       "SELECT name FROM pragma_table_info('messages') WHERE name = 'whatsappMessageId';"
     );
     if (check && Array.isArray((check as any).rows) && (check as any).rows.length > 0) {
       console.log("[DB] Coluna whatsappMessageId já existe na tabela messages");
-      return;
+    } else {
+      await client.execute("ALTER TABLE messages ADD COLUMN whatsappMessageId TEXT;");
+      console.log("[DB] Coluna whatsappMessageId adicionada com sucesso na tabela messages");
     }
-
-    // Tentar adicionar a coluna
-    await client.execute("ALTER TABLE messages ADD COLUMN whatsappMessageId TEXT;");
-    console.log("[DB] Coluna whatsappMessageId adicionada com sucesso na tabela messages");
   } catch (err: any) {
     const errorMsg = err?.message?.toLowerCase() || "";
     if (errorMsg.includes("duplicate column") || errorMsg.includes("already exists")) {
-      console.log("[DB] Coluna whatsappMessageId já existe na tabela messages (isso é OK)");
+      // OK
     } else if (errorMsg.includes("no such table: messages")) {
       console.error("[DB] Tabela messages não encontrada - verifique a base de dados");
     } else {
-      console.error("[DB] ensureMessagesWhatsappIdColumn failed:", err);
+      console.error("[DB] ensureMessagesWhatsappIdColumn check failed:", err);
     }
+  }
+
+  // Garantir coluna metadata
+  try {
+    const check = await client.execute(
+      "SELECT name FROM pragma_table_info('messages') WHERE name = 'metadata';"
+    );
+    if (check && Array.isArray((check as any).rows) && (check as any).rows.length > 0) {
+      // existe
+    } else {
+      await client.execute("ALTER TABLE messages ADD COLUMN metadata TEXT;");
+      console.log("[DB] Coluna metadata adicionada com sucesso na tabela messages");
+    }
+  } catch (err) {
+    console.warn("[DB] Erro ao verificar coluna metadata:", err);
   } finally {
     try {
       await (client as any)?.close?.();
@@ -420,9 +434,6 @@ async function ensureMessagesWhatsappIdColumn() {
   }
 }
 
-/**
- * Contact Status Events helpers (SLA por card)
- */
 async function ensureContactStatusEventsTable() {
   if (!process.env.DATABASE_URL) {
     console.warn("[DB] ensureContactStatusEventsTable: DATABASE_URL não definido");

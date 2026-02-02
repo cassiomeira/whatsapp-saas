@@ -10,7 +10,7 @@ import { processIncomingMessage } from "./aiService";
 import { TRPCError } from "@trpc/server";
 import { parse } from "csv-parse/sync";
 import type { InsertProduct, Contact } from "../drizzle/schema";
-import { getWhatsAppClient, resolveLidSync } from "./whatsappService";
+import { getWhatsAppClient, resolveLidSync, fetchAllGroups, fetchGroupMetadata } from "./whatsappService";
 import { createClient } from "@supabase/supabase-js";
 
 const MAX_UPLOAD_ERRORS = 10;
@@ -381,12 +381,21 @@ export const appRouter = router({
   }),
 
   contacts: router({
-    // Listar contatos
+    // Listar contatos (excluindo grupos)
     list: protectedProcedure.query(async ({ ctx }) => {
       if (!ctx.user.workspaceId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
       }
-      return db.getContactsByWorkspace(ctx.user.workspaceId);
+      const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId);
+      
+      // Filtrar para excluir grupos
+      return contacts.filter(c => {
+        const isGroup = (c.metadata as any)?.isGroup === true || 
+                       c.whatsappNumber.endsWith("@g.us") || 
+                       (c.metadata as any)?.whatsappJid?.endsWith("@g.us") ||
+                       c.whatsappNumber.includes("-"); // Grupos têm hífen no ID
+        return !isGroup;
+      });
     }),
 
     // Importar contatos via VCF
@@ -1901,6 +1910,228 @@ export const appRouter = router({
       }
       return db.getFlowsByWorkspace(ctx.user.workspaceId);
     }),
+  }),
+
+  groups: router({
+    // Listar grupos (contatos marcados como grupo)
+    list: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user.workspaceId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+      }
+      
+      const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId);
+      
+      // Filtrar apenas grupos
+      const groups = contacts.filter(c => {
+        const isGroup = (c.metadata as any)?.isGroup === true || 
+                       c.whatsappNumber.endsWith("@g.us") || 
+                       (c.metadata as any)?.whatsappJid?.endsWith("@g.us");
+        return isGroup;
+      });
+      
+      return groups;
+    }),
+
+    // Sincronizar grupos do WhatsApp (buscar todos os grupos e salvar no banco)
+    sync: protectedProcedure.mutation(async ({ ctx }) => {
+      if (!ctx.user.workspaceId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+      }
+
+      // Buscar instância conectada
+      const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
+      const connectedInstance = instances.find(i => i.status === "connected" && i.instanceKey);
+
+      if (!connectedInstance || !connectedInstance.instanceKey) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Nenhuma instância WhatsApp conectada. Conecte uma instância primeiro.",
+        });
+      }
+
+      try {
+        console.log(`[Groups] Syncing groups for workspace ${ctx.user.workspaceId}...`);
+        
+        // Buscar todos os grupos do WhatsApp
+        const whatsappGroups = await fetchAllGroups(connectedInstance.instanceKey);
+        
+        let created = 0;
+        let updated = 0;
+
+        for (const group of whatsappGroups) {
+          const groupNumber = group.id.split("@")[0];
+          
+          // Verificar se o grupo já existe no banco
+          let contact = await db.getContactByNumber(ctx.user.workspaceId, groupNumber);
+          
+          if (!contact) {
+            // Criar novo contato para o grupo
+            const contactId = await db.createContact({
+              workspaceId: ctx.user.workspaceId,
+              whatsappNumber: groupNumber,
+              name: group.subject || "Grupo sem nome",
+              profilePicUrl: group.profilePicUrl || null,
+              kanbanStatus: "archived", // Grupos vão para arquivados por padrão
+              metadata: {
+                isGroup: true,
+                whatsappJid: group.id,
+                subject: group.subject,
+                desc: group.desc,
+                owner: group.owner,
+                creation: group.creation,
+                participants: group.participants,
+                participantCount: group.participants.length,
+              },
+            });
+            created++;
+            console.log(`[Groups] Created group: ${group.subject} (${groupNumber})`);
+          } else {
+            // Atualizar metadados do grupo existente
+            await db.updateContactMetadata(contact.id, (metadata: any = {}) => ({
+              ...metadata,
+              isGroup: true,
+              whatsappJid: group.id,
+              subject: group.subject,
+              desc: group.desc,
+              owner: group.owner,
+              creation: group.creation,
+              participants: group.participants,
+              participantCount: group.participants.length,
+            }));
+            
+            // Atualizar nome se mudou
+            if (contact.name !== group.subject && group.subject) {
+              await db.updateContactName(contact.id, group.subject);
+            }
+            
+            // Atualizar foto se mudou
+            if (group.profilePicUrl && contact.profilePicUrl !== group.profilePicUrl) {
+              await db.updateContactProfilePic(contact.id, group.profilePicUrl);
+            }
+            
+            updated++;
+            console.log(`[Groups] Updated group: ${group.subject} (${groupNumber})`);
+          }
+        }
+
+        console.log(`[Groups] Sync completed: ${created} created, ${updated} updated`);
+        
+        return {
+          success: true,
+          created,
+          updated,
+          total: whatsappGroups.length,
+        };
+      } catch (error: any) {
+        console.error("[Groups] Error syncing groups:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Erro ao sincronizar grupos: ${error.message || "Erro desconhecido"}`,
+        });
+      }
+    }),
+
+    // Buscar detalhes de um grupo específico (participantes com fotos)
+    getDetails: protectedProcedure
+      .input(z.object({
+        contactId: z.number(),
+      }))
+      .query(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+
+        // Buscar o contato (grupo)
+        const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId);
+        const contact = contacts.find(c => c.id === input.contactId);
+
+        if (!contact) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Grupo não encontrado" });
+        }
+
+        const metadata = contact.metadata as any;
+        if (!metadata?.isGroup) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Este contato não é um grupo" });
+        }
+
+        // Buscar instância conectada
+        const instances = await db.getWhatsappInstancesByWorkspace(ctx.user.workspaceId);
+        const connectedInstance = instances.find(i => i.status === "connected" && i.instanceKey);
+
+        // Se tiver instância conectada, atualizar metadados em tempo real
+        if (connectedInstance?.instanceKey && metadata.whatsappJid) {
+          try {
+            const freshMetadata = await fetchGroupMetadata(connectedInstance.instanceKey, metadata.whatsappJid);
+            
+            if (freshMetadata) {
+              // Atualizar no banco
+              await db.updateContactMetadata(contact.id, (m: any = {}) => ({
+                ...m,
+                subject: freshMetadata.subject,
+                desc: freshMetadata.desc,
+                owner: freshMetadata.owner,
+                participants: freshMetadata.participants,
+                participantCount: freshMetadata.participants.length,
+              }));
+
+              // Atualizar foto se mudou
+              if (freshMetadata.profilePicUrl && contact.profilePicUrl !== freshMetadata.profilePicUrl) {
+                await db.updateContactProfilePic(contact.id, freshMetadata.profilePicUrl);
+              }
+
+              // Buscar nomes dos participantes dos contatos salvos
+              const participantsWithNames = await Promise.all(
+                freshMetadata.participants.map(async (p) => {
+                  const participantNumber = p.id.split("@")[0];
+                  const participantContact = await db.getContactByNumber(ctx.user.workspaceId!, participantNumber);
+                  
+                  return {
+                    ...p,
+                    number: participantNumber,
+                    name: participantContact?.name || p.name || participantNumber,
+                    profilePicUrl: p.profilePicUrl || participantContact?.profilePicUrl,
+                  };
+                })
+              );
+
+              return {
+                id: contact.id,
+                name: freshMetadata.subject || contact.name,
+                profilePicUrl: freshMetadata.profilePicUrl || contact.profilePicUrl,
+                description: freshMetadata.desc,
+                owner: freshMetadata.owner,
+                participants: participantsWithNames,
+                participantCount: participantsWithNames.length,
+                whatsappJid: metadata.whatsappJid,
+              };
+            }
+          } catch (err) {
+            console.error(`[Groups] Error fetching fresh metadata for ${contact.id}:`, err);
+            // Continuar com os dados do banco se falhar
+          }
+        }
+
+        // Retornar dados do banco (se não conseguiu atualizar em tempo real)
+        const participants = (metadata.participants || []).map((p: any) => ({
+          id: p.id,
+          number: p.id?.split("@")[0] || "",
+          name: p.name || p.id?.split("@")[0] || "Desconhecido",
+          admin: p.admin,
+          isSuperAdmin: p.isSuperAdmin,
+          profilePicUrl: p.profilePicUrl,
+        }));
+
+        return {
+          id: contact.id,
+          name: metadata.subject || contact.name,
+          profilePicUrl: contact.profilePicUrl,
+          description: metadata.desc,
+          owner: metadata.owner,
+          participants,
+          participantCount: participants.length,
+          whatsappJid: metadata.whatsappJid,
+        };
+      }),
   }),
 
   campaigns: router({

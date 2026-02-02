@@ -93,7 +93,11 @@
 ## Melhorias Implementadas
 - [x] Suporte a áudio: IA agora transcreve áudios recebidos automaticamente e processa o texto
 - [x] Suporte a imagens: IA agora analisa imagens recebidas usando GPT-4 Vision e responde adequadamente
+- [x] Suporte a imagens: IA agora analisa imagens recebidas usando GPT-4 Vision e responde adequadamente
 - [x] Processamento de mídia no webhook (áudio + imagem) totalmente integrado
+- [x] Funcionalidade de Câmera/Vídeo implementada no Kanban (ver DEV_NOTES.md)
+- [x] Sincronização de mensagens enviadas pelo celular (isFromMe) fix
+- [ ] Implementar busca de histórico de mensagens (Backfill) - 1 semana ao conectar/criar conversa
 
 
 

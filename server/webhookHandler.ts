@@ -81,11 +81,12 @@ async function handleIncomingMessage(payload: WebhookPayload) {
       return;
     }
 
-    // **FILTRO: Ignorar mensagens de grupos**
+    // **FILTRO: Permitir mensagens de grupos mas marcar como tal**
     // Grupos terminam com @g.us, conversas diretas com @s.whatsapp.net
-    if (remoteJid.endsWith('@g.us')) {
-      console.log('[Webhook] Mensagem de grupo ignorada:', remoteJid);
-      return;
+    const isGroup = remoteJid.endsWith('@g.us');
+    if (isGroup) {
+      console.log('[Webhook] Mensagem de grupo detectada:', remoteJid);
+      // Não retornamos mais, processamos para salvar no banco
     }
 
     // Extrair número do WhatsApp (resolvendo LID se necessário)
@@ -162,10 +163,34 @@ async function handleIncomingMessage(payload: WebhookPayload) {
     let contact = contacts.find(c => c.whatsappNumber === whatsappNumber);
 
     if (!contact) {
+      let contactName = data.pushName || whatsappNumber;
+
+      // Se for grupo, tentar buscar o nome via socket (importado)
+      if (isGroup) {
+        try {
+          const { getWhatsAppClient } = await import("./whatsappService");
+          const sock = getWhatsAppClient(instance);
+          if (sock) {
+            const groupMeta = await sock.groupMetadata(remoteJid);
+            if (groupMeta?.subject) {
+              contactName = groupMeta.subject;
+              console.log(`[Webhook] Group subject found: ${contactName}`);
+            }
+          }
+        } catch (gErr) {
+          console.log(`[Webhook] Could not fetch group metadata:`, gErr);
+        }
+      }
+
       const contactId = await db.createContact({
         workspaceId: dbInstance.workspaceId,
         whatsappNumber,
-        name: data.pushName || whatsappNumber,
+        name: contactName,
+        kanbanStatus: isGroup ? "archived" : undefined, // Grupos não aparecem no Kanban principal por padrão
+        metadata: {
+          isGroup: isGroup,
+          whatsappJid: remoteJid
+        }
       });
       // Recarregar contatos
       contacts = await db.getContactsByWorkspace(dbInstance.workspaceId);
@@ -246,7 +271,54 @@ async function handleIncomingMessage(payload: WebhookPayload) {
       return;
     }
 
-    // Processar mensagem com IA
+    // Processar mensagem com IA (exceto se for grupo)
+    if (isGroup) {
+      console.log(`[Webhook] Skipping AI for group message: ${whatsappNumber}`);
+
+      // Salvar a mensagem no banco para aparecer na tela de Grupos
+      try {
+        const conversations = await db.getConversationsByWorkspace(dbInstance.workspaceId);
+        let activeConv = conversations.find(c => c.contactId === contact!.id);
+
+        if (!activeConv) {
+          const convId = await db.createConversation({
+            workspaceId: dbInstance.workspaceId,
+            contactId: contact!.id,
+            instanceId: dbInstance.id,
+            status: "bot_handling"
+          });
+          activeConv = (await db.getConversationsByWorkspace(dbInstance.workspaceId)).find(c => c.id === convId);
+        }
+
+        if (activeConv) {
+          // Extrair informações do participante (quem mandou a mensagem no grupo)
+          // Cast para any para acessar propriedades que podem variar na versao do baileys ou tipo de msg
+          const msgData = data as any;
+          const participant = msgData.key?.participant || msgData.participant;
+          const messageMetadata = {
+            participant: participant,
+            pushName: data.pushName,
+            isGroup: true
+          };
+
+          await db.createMessage({
+            conversationId: activeConv.id,
+            senderType: "contact",
+            content: messageText,
+            mediaUrl,
+            messageType: mediaType || "text",
+            whatsappMessageId: data.key?.id,
+            metadata: messageMetadata
+          });
+          console.log(`[Webhook] Group message saved to conversation ${activeConv.id} (Participant: ${participant})`);
+        }
+      } catch (groupMsgErr) {
+        console.error("[Webhook] Failed to save group message:", groupMsgErr);
+      }
+
+      return;
+    }
+
     await processIncomingMessage(
       dbInstance.workspaceId,
       contact.id,

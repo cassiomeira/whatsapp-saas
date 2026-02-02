@@ -1,0 +1,8 @@
+{
+  "name": "CRM Mobile Wrapper",
+  "description": "A native-style wrapper for a CRM and WhatsApp SaaS system, featuring a high-fidelity dark mode UI, secure authentication, and optimized WebView integration with hardware access.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

@@ -772,6 +772,24 @@ export async function processIncomingMessage(
     console.log(`[AI Service] ===== processIncomingMessage INICIADO =====`);
     console.log(`[AI Service] workspaceId: ${workspaceId}, contactId: ${contactId}, messageContent: "${messageContent.substring(0, 100)}"`);
 
+    // VERIFICAÇÃO CRÍTICA: Não processar grupos
+    // Verificar se o número/JID é de um grupo
+    if (whatsappNumber.includes("@g.us") || whatsappNumber.includes("-")) {
+      console.log(`[AI Service] ⚠️ GRUPO DETECTADO (${whatsappNumber}). IA NÃO IRÁ PROCESSAR.`);
+      return;
+    }
+    
+    // Verificar também pelo contato
+    const contacts = await db.getContactsByWorkspace(workspaceId);
+    const contact = contacts.find(c => c.id === contactId);
+    if (contact) {
+      const metadata = contact.metadata as any;
+      if (metadata?.isGroup === true || contact.whatsappNumber.includes("-") || (metadata?.whatsappJid && metadata.whatsappJid.includes("@g.us"))) {
+        console.log(`[AI Service] ⚠️ GRUPO DETECTADO pelo contato (${contact.whatsappNumber}). IA NÃO IRÁ PROCESSAR.`);
+        return;
+      }
+    }
+
     // Buscar ou criar conversa
     let conversation = await db.getConversationsByWorkspace(workspaceId);
     let activeConv = conversation.find(
@@ -894,9 +912,7 @@ export async function processIncomingMessage(
     }
 
     // IMPORTANTE: Salvar mensagem do contato DEPOIS de processar para garantir que todas as mensagens chegam na IA
-    // Mas primeiro buscar contato para verificar status
-    const contacts = await db.getContactsByWorkspace(workspaceId);
-    const contact = contacts.find(c => c.id === contactId);
+    // Reutilizar variáveis contacts e contact já declaradas no início da função
     // Número/JID de destino: priorizar JID salvo no metadata (pode ser @lid)
     const destinationNumber =
       ((contact?.metadata as any)?.whatsappJid && String((contact?.metadata as any)?.whatsappJid).trim().length > 0)

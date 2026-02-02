@@ -467,12 +467,17 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         const remoteJid = msg.key.remoteJid;
 
         if (!remoteJid || remoteJid === "status@broadcast") continue;
-        if (remoteJid.includes("@g.us")) continue; // Ignorar grupos
+        
+        // Pular grupos no histórico - mensagens antigas de grupos não são importadas
+        const isGroup = remoteJid.includes("@g.us");
+        if (isGroup) {
+          continue; // Não importar mensagens antigas de grupos
+        }
 
         let jidUser = remoteJid.split("@")[0];
         let whatsappNumber = jidUser;
 
-        // Priorizar senderPn
+        // Priorizar senderPn 
         const senderPn = (msg as any).senderPn || (msg.key as any).senderPn;
         if (senderPn) {
           whatsappNumber = senderPn.split("@")[0];
@@ -488,6 +493,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
             workspaceId: dbInstance.workspaceId,
             whatsappNumber,
             name: contactName,
+            kanbanStatus: "new_contact",
             metadata: {
               whatsappJid: remoteJid,
               whatsappLid: remoteJid.endsWith("@lid") ? remoteJid : undefined,
@@ -523,7 +529,10 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
           senderType: isFromMe ? "agent" : "contact",
           sentAt: new Date((typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp : msg.messageTimestamp?.low || 0) * 1000),
           whatsappMessageId: msg.key.id,
-          messageType: 'text'
+          messageType: 'text',
+          metadata: {
+            pushName: msg.pushName
+          }
         });
       }
 
@@ -545,7 +554,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         const remoteJid = msg.key.remoteJid;
 
         if (!remoteJid || remoteJid === "status@broadcast") continue;
-        if (remoteJid.includes("@g.us")) continue; // Ignorar grupos por enquanto
+        const isGroup = remoteJid.includes("@g.us"); // Ignorar grupos por enquanto
 
         if (isFromMe) {
           // Ajuste: Vamos processar mensagens enviadas pelo celular APENAS para salvar no histórico
@@ -565,7 +574,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         // Priorizar senderPn para resolver LID automaticamente (Baileys v6+)
         // Isso evita chamadas onWhatsApp desnecessárias
         const senderPn = (msg as any).senderPn || (msg.key as any).senderPn;
-        if (senderPn) {
+        if (senderPn && !isGroup) {
           const pn = senderPn.split("@")[0];
           console.log(`[WhatsApp] senderPn detected: ${pn}. Using as real number for ${remoteJid}`);
           whatsappNumber = pn;
@@ -573,6 +582,20 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         }
 
         let contactName = msg.pushName || whatsappNumber;
+
+        // Se for grupo, tentar obter o nome real do grupo (subject)
+        if (isGroup) {
+          try {
+            // Pequeno delay para garantir que a conexão esteja pronta para query
+            const groupMeta = await sock.groupMetadata(remoteJid);
+            if (groupMeta && groupMeta.subject) {
+              contactName = groupMeta.subject;
+              console.log(`[WhatsApp] Group subject found: ${contactName}`);
+            }
+          } catch (gErr) {
+            console.log(`[WhatsApp] Could not fetch group metadata (might be syncing):`, gErr);
+          }
+        }
 
         // Verificar antigo timestamp
         if (msg.messageTimestamp) {
@@ -707,10 +730,25 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
         const messageType = Object.keys(msg.message)[0];
         const content = msg.message[messageType as keyof typeof msg.message] as any;
 
-        // Extrair texto
+        // Extrair texto MELHORADO
         let body = content?.text || content?.caption || msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
 
-        if (messageType === 'imageMessage' || messageType === 'videoMessage' || messageType === 'audioMessage' || messageType === 'documentMessage') {
+        // Fallback para tipos complexos se body estiver vazio
+        if (!body) {
+          if (messageType === 'stickerMessage') body = '[Figurinha]';
+          else if (messageType === 'imageMessage') body = '[Imagem]';
+          else if (messageType === 'videoMessage') body = '[Vídeo]';
+          else if (messageType === 'audioMessage') body = '[Áudio]';
+          else if (messageType === 'documentMessage') body = '[Documento]';
+          else if (messageType === 'reactionMessage') body = null; // Ignorar reações por enquanto
+          else if (messageType === 'protocolMessage') body = null; // Mensagens de sistema
+          else if (messageType === 'senderKeyDistributionMessage') body = null; // Distribuição de chaves em grupos
+          else body = `[${messageType}]`;
+        }
+
+        if (!body) continue; // Pular mensagens vazias ou ignoradas
+
+        if (messageType === 'imageMessage' || messageType === 'videoMessage' || messageType === 'audioMessage' || messageType === 'documentMessage' || messageType === 'stickerMessage') {
           try {
             const buffer = await downloadMediaMessage(msg, 'buffer', {}, {
               logger,
@@ -724,8 +762,9 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
             else if (messageType === 'videoMessage') mediaType = 'video';
             else if (messageType === 'audioMessage') mediaType = 'audio';
             else if (messageType === 'documentMessage') mediaType = 'document';
+            else if (messageType === 'stickerMessage') mediaType = 'image'; // Stickers são tratados como imagens
 
-            const fileName = content.fileName || `${messageType}-${Date.now()}.${mediaMimeType?.split('/')[1] || 'bin'}`;
+            const fileName = content.fileName || `${messageType}-${Date.now()}.${mediaMimeType?.split('/')[1] || 'webp'}`;
 
             if (dbInstance.workspaceId && mediaBase64) {
               mediaUrl = await uploadMediaToSupabase(dbInstance.workspaceId, mediaBase64, mediaMimeType || 'application/octet-stream', fileName);
@@ -746,18 +785,59 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
 
           await db.createMessage({
             conversationId: conversation!.id,
-            content: body || (mediaUrl ? `[${mediaType}]` : ""),
+            content: body || (mediaUrl ? `[${mediaType}]` : " (Mensagem sem texto)"),
             senderType: "agent", // Marcar como enviado por "agente" (usuário real)
             sentAt: new Date(),
             whatsappMessageId: msg.key.id, // Coluna top-level correta
             mediaUrl,
-            messageType: mediaType || 'text'
+            messageType: mediaType || 'text',
+            metadata: {
+              isGroup: isGroup,
+              participant: msg.key.participant || (msg as any).participant,
+              pushName: msg.pushName,
+              fileName: content?.fileName
+            }
           });
 
           continue; // IMPORTANTE: Parar aqui para não chamar a IA
         }
 
-        // Chamar IA apenas para mensagens de terceiros
+        // GRUPOS: Salvar mensagem mas NÃO chamar a IA
+        if (isGroup) {
+          console.log(`[WhatsApp] Group message detected. Saving without AI processing.`);
+          
+          // Buscar foto de perfil do participante
+          const participantJid = msg.key.participant || (msg as any).participant;
+          let participantProfilePic: string | undefined;
+          if (participantJid) {
+            try {
+              participantProfilePic = await sock.profilePictureUrl(participantJid, 'image');
+            } catch (e) {
+              // Sem foto de perfil
+            }
+          }
+          
+          await db.createMessage({
+            conversationId: conversation!.id,
+            content: body || (mediaUrl ? `[${mediaType}]` : " (Mensagem sem texto)"),
+            senderType: "contact",
+            sentAt: new Date(),
+            whatsappMessageId: msg.key.id,
+            mediaUrl,
+            messageType: mediaType || 'text',
+            metadata: {
+              isGroup: true,
+              participant: participantJid,
+              pushName: msg.pushName,
+              participantProfilePic,
+              fileName: content?.fileName
+            }
+          });
+
+          continue; // IMPORTANTE: Parar aqui para NÃO chamar a IA em grupos
+        }
+
+        // Chamar IA apenas para mensagens de terceiros (NÃO grupos)
         await processIncomingMessage(
           dbInstance.workspaceId,
           contact.id,
@@ -983,6 +1063,141 @@ export async function initializeExistingInstances(): Promise<void> {
         console.error(`[WhatsApp] Failed to reconnect ${instance.instanceKey}:`, err)
       );
     }
+  }
+}
+
+/**
+ * Buscar todos os grupos do WhatsApp
+ */
+export async function fetchAllGroups(instanceKey: string): Promise<Array<{
+  id: string;
+  name: string;
+  subject: string;
+  desc?: string;
+  owner?: string;
+  creation?: number;
+  participants: Array<{
+    id: string;
+    admin?: string;
+    isSuperAdmin?: boolean;
+  }>;
+  profilePicUrl?: string;
+}>> {
+  const sock = activeSockets.get(instanceKey);
+  if (!sock) throw new Error("Instance not connected");
+
+  try {
+    console.log(`[WhatsApp] Fetching all groups for ${instanceKey}...`);
+    
+    // Buscar todos os grupos que participamos
+    const groups = await sock.groupFetchAllParticipating();
+    
+    const result = [];
+    
+    for (const [jid, metadata] of Object.entries(groups)) {
+      console.log(`[WhatsApp] Processing group: ${jid} - ${metadata.subject}`);
+      
+      // Tentar buscar foto do grupo
+      let profilePicUrl: string | undefined;
+      try {
+        profilePicUrl = await sock.profilePictureUrl(jid, "image").catch(() => undefined);
+      } catch (err) {
+        console.log(`[WhatsApp] No profile pic for group ${jid}`);
+      }
+      
+      result.push({
+        id: jid,
+        name: metadata.subject || "Grupo sem nome",
+        subject: metadata.subject || "",
+        desc: metadata.desc || undefined,
+        owner: metadata.owner || undefined,
+        creation: metadata.creation,
+        participants: metadata.participants.map(p => ({
+          id: p.id,
+          admin: p.admin || undefined,
+          isSuperAdmin: p.admin === "superadmin",
+        })),
+        profilePicUrl,
+      });
+    }
+    
+    console.log(`[WhatsApp] Found ${result.length} groups`);
+    return result;
+  } catch (err) {
+    console.error(`[WhatsApp] Error fetching groups:`, err);
+    throw err;
+  }
+}
+
+/**
+ * Buscar metadados de um grupo específico
+ */
+export async function fetchGroupMetadata(instanceKey: string, groupJid: string): Promise<{
+  id: string;
+  name: string;
+  subject: string;
+  desc?: string;
+  owner?: string;
+  creation?: number;
+  participants: Array<{
+    id: string;
+    name?: string;
+    admin?: string;
+    isSuperAdmin?: boolean;
+    profilePicUrl?: string;
+  }>;
+  profilePicUrl?: string;
+} | null> {
+  const sock = activeSockets.get(instanceKey);
+  if (!sock) throw new Error("Instance not connected");
+
+  try {
+    console.log(`[WhatsApp] Fetching metadata for group ${groupJid}...`);
+    
+    const metadata = await sock.groupMetadata(groupJid);
+    if (!metadata) return null;
+    
+    // Buscar foto do grupo
+    let profilePicUrl: string | undefined;
+    try {
+      profilePicUrl = await sock.profilePictureUrl(groupJid, "image").catch(() => undefined);
+    } catch (err) {
+      console.log(`[WhatsApp] No profile pic for group ${groupJid}`);
+    }
+    
+    // Buscar fotos dos participantes
+    const participantsWithPics = await Promise.all(
+      metadata.participants.map(async (p) => {
+        let participantPic: string | undefined;
+        try {
+          participantPic = await sock.profilePictureUrl(p.id, "image").catch(() => undefined);
+        } catch (err) {
+          // Ignorar erro de foto
+        }
+        
+        return {
+          id: p.id,
+          name: undefined, // Será preenchido depois se tivermos no contato
+          admin: p.admin || undefined,
+          isSuperAdmin: p.admin === "superadmin",
+          profilePicUrl: participantPic,
+        };
+      })
+    );
+    
+    return {
+      id: groupJid,
+      name: metadata.subject || "Grupo sem nome",
+      subject: metadata.subject || "",
+      desc: metadata.desc || undefined,
+      owner: metadata.owner || undefined,
+      creation: metadata.creation,
+      participants: participantsWithPics,
+      profilePicUrl,
+    };
+  } catch (err) {
+    console.error(`[WhatsApp] Error fetching group metadata for ${groupJid}:`, err);
+    return null;
   }
 }
 

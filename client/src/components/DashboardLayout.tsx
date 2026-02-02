@@ -33,6 +33,7 @@ const getMenuItems = (userRole?: string | null) => {
     { icon: LayoutDashboard, label: "Dashboard", path: "/dashboard" },
     { icon: MessageSquare, label: "Caixa de Entrada", path: "/inbox" },
     { icon: Users, label: "Contatos", path: "/contacts" },
+    { icon: Users, label: "Grupos", path: "/groups" },
     { icon: BarChart3, label: "Atendimento", path: "/kanban" },
     { icon: PhoneCall, label: "WhatsApp", path: "/whatsapp" },
     { icon: Package, label: "Produtos", path: "/products" },
@@ -157,7 +158,7 @@ function DashboardLayoutContent({
 
   // Filtrar menu baseado no modo
   const allMenuItems = getMenuItems(user?.workspaceRole);
-  const simpleMenuPaths = ['/contacts', '/kanban', '/products'];
+  const simpleMenuPaths = ['/contacts', '/kanban', '/products', '/groups'];
   const menuItems = viewMode === 'simple'
     ? allMenuItems.filter(item => simpleMenuPaths.includes(item.path))
     : allMenuItems;
