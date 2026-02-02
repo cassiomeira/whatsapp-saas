@@ -14,7 +14,7 @@
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "render:build": "pnpm install && pnpm build",
-    "render:start": "pnpm db:push && pnpm start"
+    "render:start": "pnpm start"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
