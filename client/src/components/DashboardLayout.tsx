@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/sidebar";
 import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, LogOut, PanelLeft, Users, MessageSquare, Bot, Workflow, BarChart3, Settings, PhoneCall, Megaphone, UserCog, Package, Sun, Moon, HardDrive } from "lucide-react";
+import { LayoutDashboard, LogOut, PanelLeft, Users, MessageSquare, Bot, Workflow, BarChart3, Settings, PhoneCall, Megaphone, UserCog, Package, Sun, Moon, HardDrive, LayoutGrid, LayoutList } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
@@ -33,22 +33,22 @@ const getMenuItems = (userRole?: string | null) => {
     { icon: LayoutDashboard, label: "Dashboard", path: "/dashboard" },
     { icon: MessageSquare, label: "Caixa de Entrada", path: "/inbox" },
     { icon: Users, label: "Contatos", path: "/contacts" },
-    { icon: BarChart3, label: "CRM Kanban", path: "/kanban" },
+    { icon: BarChart3, label: "Atendimento", path: "/kanban" },
     { icon: PhoneCall, label: "WhatsApp", path: "/whatsapp" },
     { icon: Package, label: "Produtos", path: "/products" },
     { icon: Bot, label: "Configurar IA", path: "/bot" },
     { icon: Workflow, label: "Fluxos", path: "/flows" },
     { icon: Megaphone, label: "Campanhas", path: "/campaigns" },
   ];
-  
+
   // Adicionar "Usuários" apenas para owner
   if (userRole === "owner") {
     items.push({ icon: UserCog, label: "Usuários", path: "/users" });
   }
-  
+
   items.push({ icon: HardDrive, label: "Armazenamento", path: "/storage" });
   items.push({ icon: Settings, label: "Configurações", path: "/settings" });
-  
+
   return items;
 };
 
@@ -142,7 +142,25 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const menuItems = getMenuItems(user?.workspaceRole);
+
+  // View mode: simple or advanced (default: simple)
+  const [viewMode, setViewMode] = useState<'simple' | 'advanced'>(() => {
+    const saved = localStorage.getItem('view-mode');
+    return (saved as 'simple' | 'advanced') || 'simple';
+  });
+
+  const toggleViewMode = () => {
+    const newMode = viewMode === 'simple' ? 'advanced' : 'simple';
+    setViewMode(newMode);
+    localStorage.setItem('view-mode', newMode);
+  };
+
+  // Filtrar menu baseado no modo
+  const allMenuItems = getMenuItems(user?.workspaceRole);
+  const simpleMenuPaths = ['/contacts', '/kanban', '/products'];
+  const menuItems = viewMode === 'simple'
+    ? allMenuItems.filter(item => simpleMenuPaths.includes(item.path))
+    : allMenuItems;
   const activeMenuItem = menuItems.find(item => item.path === location);
   const isMobile = useIsMobile();
 
@@ -198,11 +216,11 @@ function DashboardLayoutContent({
               {isCollapsed ? (
                 <div className="relative h-8 w-8 shrink-0 group">
                   {workspaceLogo ? (
-                  <img
+                    <img
                       src={workspaceLogo}
-                    className="h-8 w-8 rounded-md object-cover ring-1 ring-border"
-                    alt="Logo"
-                  />
+                      className="h-8 w-8 rounded-md object-cover ring-1 ring-border"
+                      alt="Logo"
+                    />
                   ) : (
                     <div className="h-8 w-8 rounded-md bg-muted flex items-center justify-center text-sm font-semibold">
                       {APP_TITLE.charAt(0)}
@@ -219,11 +237,11 @@ function DashboardLayoutContent({
                 <>
                   <div className="flex items-center gap-3 min-w-0">
                     {workspaceLogo ? (
-                    <img
+                      <img
                         src={workspaceLogo}
-                      className="h-8 w-8 rounded-md object-cover ring-1 ring-border shrink-0"
-                      alt="Logo"
-                    />
+                        className="h-8 w-8 rounded-md object-cover ring-1 ring-border shrink-0"
+                        alt="Logo"
+                      />
                     ) : (
                       <div className="h-8 w-8 rounded-md bg-muted flex items-center justify-center text-sm font-semibold shrink-0">
                         {APP_TITLE.charAt(0)}
@@ -267,7 +285,23 @@ function DashboardLayoutContent({
             </SidebarMenu>
           </SidebarContent>
 
-          <SidebarFooter className="p-3">
+          <SidebarFooter className="p-3 space-y-2">
+            {/* Toggle View Mode Button */}
+            <button
+              onClick={toggleViewMode}
+              className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-accent/50 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              title={viewMode === 'simple' ? 'Modo Avançado' : 'Modo Simplificado'}
+            >
+              {viewMode === 'simple' ? (
+                <LayoutList className="h-4 w-4 shrink-0" />
+              ) : (
+                <LayoutGrid className="h-4 w-4 shrink-0" />
+              )}
+              <span className="text-sm group-data-[collapsible=icon]:hidden">
+                {viewMode === 'simple' ? 'Modo Avançado' : 'Modo Simplificado'}
+              </span>
+            </button>
+
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-3 rounded-lg px-1 py-1 hover:bg-accent/50 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
