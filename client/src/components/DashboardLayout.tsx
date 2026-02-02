@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/sidebar";
 import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, LogOut, PanelLeft, Users, MessageSquare, Bot, Workflow, BarChart3, Settings, PhoneCall, Megaphone, UserCog, Package, Sun, Moon, HardDrive, LayoutGrid, LayoutList } from "lucide-react";
+import { LayoutDashboard, LogOut, PanelLeft, Users, MessageSquare, Bot, Workflow, BarChart3, Settings, PhoneCall, Megaphone, UserCog, Package, Sun, Moon, HardDrive, LayoutGrid, LayoutList, MessageCircle } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
@@ -365,6 +365,8 @@ function DashboardLayoutContent({
               >
                 {theme === "light" ? (
                   <Moon className="h-4 w-4" />
+                ) : theme === "dark" ? (
+                  <MessageCircle className="h-4 w-4 text-green-500" />
                 ) : (
                   <Sun className="h-4 w-4" />
                 )}
@@ -385,6 +387,11 @@ function DashboardLayoutContent({
                 <>
                   <Moon className="h-4 w-4" />
                   <span>Modo escuro</span>
+                </>
+              ) : theme === "dark" ? (
+                <>
+                  <MessageCircle className="h-4 w-4 text-green-500" />
+                  <span>Modo WhatsApp</span>
                 </>
               ) : (
                 <>

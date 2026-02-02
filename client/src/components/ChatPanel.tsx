@@ -399,7 +399,7 @@ export default function ChatPanel({ contactId, handleImagePreview, hideHeader = 
                 </div>
             )}
 
-            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden p-4 min-h-0">
+            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden p-4 min-h-0" style={{ backgroundImage: 'var(--chat-background)', backgroundRepeat: 'repeat', backgroundSize: '400px' }}>
                 <div className="space-y-4">
                     {!conversation ? (
                         <div className="text-center text-muted-foreground">Nenhuma conversa encontrada</div>
