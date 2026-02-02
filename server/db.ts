@@ -738,6 +738,14 @@ export async function getContactsByWorkspace(workspaceId: number) {
   );
 }
 
+
+export async function getContact(contactId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(contacts).where(eq(contacts.id, contactId)).limit(1);
+  return result[0];
+}
+
 export async function getContactByNumber(workspaceId: number, whatsappNumber: string) {
   const db = await getDb();
   if (!db) return undefined;
