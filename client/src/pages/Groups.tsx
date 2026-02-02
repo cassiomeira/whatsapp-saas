@@ -12,12 +12,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
+import { useIsMobile } from "@/hooks/useMobile";
+import { ArrowLeft } from "lucide-react";
 
 export default function Groups() {
     const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
     const [searchTerm, setSearchTerm] = useState("");
     const [previewImage, setPreviewImage] = useState<string | null>(null);
     const [showParticipants, setShowParticipants] = useState(false);
+    const isMobile = useIsMobile();
 
     const utils = trpc.useUtils();
 
@@ -56,8 +59,9 @@ export default function Groups() {
         <WorkspaceGuard>
             <DashboardLayout>
                 <div className="flex h-[calc(100vh-7rem)] gap-4 overflow-hidden">
+
                     {/* Sidebar - Lista de Grupos */}
-                    <Card className="w-80 flex flex-col flex-shrink-0 flex-grow-0">
+                    <Card className={`flex flex-col flex-shrink-0 flex-grow-0 ${isMobile ? 'w-full' : 'w-80'} ${isMobile && selectedContactId ? 'hidden' : ''}`}>
                         <div className="p-4 border-b space-y-4">
                             <div className="flex items-center justify-between">
                                 <h2 className="font-semibold flex items-center gap-2">
@@ -100,9 +104,9 @@ export default function Groups() {
                                     // Verificar se o nome parece um ID de grupo (números e traços)
                                     const looksLikeGroupId = (name: string) => /^[\d\-@]+$/.test(name);
                                     // Priorizar subject do metadata, depois name (se não for ID)
-                                    const groupName = metadata?.subject || 
+                                    const groupName = metadata?.subject ||
                                         (group.name && !looksLikeGroupId(group.name) ? group.name : null) ||
-                                        metadata?.pushName || 
+                                        metadata?.pushName ||
                                         "Grupo sem nome";
                                     const pCount = metadata?.participantCount || metadata?.participants?.length || 0;
 
@@ -135,12 +139,17 @@ export default function Groups() {
                     </Card>
 
                     {/* Chat Panel - Área Principal */}
-                    <Card className="flex-1 flex flex-col overflow-hidden" style={{ minWidth: 0, maxWidth: 'calc(100% - 336px)' }}>
+                    <Card className={`flex-1 flex flex-col overflow-hidden ${isMobile && !selectedContactId ? 'hidden' : ''}`} style={!isMobile ? { minWidth: 0, maxWidth: 'calc(100% - 336px)' } : {}}>
                         {selectedContactId ? (
                             <>
                                 {/* Header personalizado para grupos */}
                                 <div className="flex items-center justify-between p-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 shrink-0">
                                     <div className="flex items-center gap-3 min-w-0 flex-1">
+                                        {isMobile && (
+                                            <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8" onClick={() => setSelectedContactId(null)}>
+                                                <ArrowLeft className="w-5 h-5" />
+                                            </Button>
+                                        )}
                                         <Avatar className="h-10 w-10 shrink-0">
                                             <AvatarImage src={selectedGroup?.profilePicUrl || undefined} />
                                             <AvatarFallback className="bg-primary/10">
@@ -152,7 +161,7 @@ export default function Groups() {
                                                 {(() => {
                                                     const meta = selectedGroup?.metadata as any;
                                                     const looksLikeId = (n: string) => /^[\d\-@]+$/.test(n);
-                                                    return meta?.subject || 
+                                                    return meta?.subject ||
                                                         (selectedGroup?.name && !looksLikeId(selectedGroup.name) ? selectedGroup.name : null) ||
                                                         "Grupo";
                                                 })()}
