@@ -387,13 +387,13 @@ export const appRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
       }
       const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId);
-
+      
       // Filtrar para excluir grupos
       return contacts.filter(c => {
-        const isGroup = (c.metadata as any)?.isGroup === true ||
-          c.whatsappNumber.endsWith("@g.us") ||
-          (c.metadata as any)?.whatsappJid?.endsWith("@g.us") ||
-          c.whatsappNumber.includes("-"); // Grupos têm hífen no ID
+        const isGroup = (c.metadata as any)?.isGroup === true || 
+                       c.whatsappNumber.endsWith("@g.us") || 
+                       (c.metadata as any)?.whatsappJid?.endsWith("@g.us") ||
+                       c.whatsappNumber.includes("-"); // Grupos têm hífen no ID
         return !isGroup;
       });
     }),
@@ -657,37 +657,28 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
         }
 
-        // Verificar se é um grupo (contém "-" ou termina com "@g.us")
-        const isGroup = input.whatsappNumber.includes("-") || input.whatsappNumber.endsWith("@g.us");
+        // Normalizar número (remover caracteres não numéricos, exceto +)
+        const normalizedNumber = normalizePhone(input.whatsappNumber);
 
-        let normalizedNumber = input.whatsappNumber;
-        if (!isGroup) {
-          // Normalizar número (remover caracteres não numéricos, exceto +) APENAS se não for grupo
-          normalizedNumber = normalizePhone(input.whatsappNumber);
-        }
-
-        // Buscar ou criar contato (Groups também são armazenados como contato/grupo na tabela contacts?)
-        // Se for grupo, a busca deve ser pelo ID exato.
+        // Buscar ou criar contato
         let contact = await db.getContactByNumber(ctx.user.workspaceId, normalizedNumber);
 
         if (!contact) {
           // Criar novo contato
-          const destinationJid = isGroup ? (normalizedNumber.endsWith("@g.us") ? normalizedNumber : `${normalizedNumber}@g.us`) : `${normalizedNumber}@c.us`;
+          const destinationJid = `${normalizedNumber}@c.us`;
           const contactId = await db.createContact({
             workspaceId: ctx.user.workspaceId,
             whatsappNumber: normalizedNumber,
-            name: input.name || (isGroup ? "Grupo Desconhecido" : null),
+            name: input.name || null,
             kanbanStatus: "waiting_attendant", // Marcar como aguardando atendente para IA não interferir
             metadata: {
               startedByAgent: true, // Flag para indicar que foi iniciado pelo atendente
               whatsappJid: destinationJid,
               displayNumber: normalizedNumber,
               lastNormalized: normalizedNumber,
-              isGroup: isGroup
             },
           });
-          contact = await db.getContact(contactId);
-          if (!contact) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create contact object" });
+          contact = await db.getContactByNumber(ctx.user.workspaceId, normalizedNumber);
         } else {
           // Atualizar status para waiting_attendant para garantir que IA não interfira
           await db.updateContactKanbanStatus(contact.id, "waiting_attendant");
@@ -1927,17 +1918,17 @@ export const appRouter = router({
       if (!ctx.user.workspaceId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
       }
-
+      
       const contacts = await db.getContactsByWorkspace(ctx.user.workspaceId);
-
+      
       // Filtrar apenas grupos
       const groups = contacts.filter(c => {
-        const isGroup = (c.metadata as any)?.isGroup === true ||
-          c.whatsappNumber.endsWith("@g.us") ||
-          (c.metadata as any)?.whatsappJid?.endsWith("@g.us");
+        const isGroup = (c.metadata as any)?.isGroup === true || 
+                       c.whatsappNumber.endsWith("@g.us") || 
+                       (c.metadata as any)?.whatsappJid?.endsWith("@g.us");
         return isGroup;
       });
-
+      
       return groups;
     }),
 
@@ -1960,19 +1951,19 @@ export const appRouter = router({
 
       try {
         console.log(`[Groups] Syncing groups for workspace ${ctx.user.workspaceId}...`);
-
+        
         // Buscar todos os grupos do WhatsApp
         const whatsappGroups = await fetchAllGroups(connectedInstance.instanceKey);
-
+        
         let created = 0;
         let updated = 0;
 
         for (const group of whatsappGroups) {
           const groupNumber = group.id.split("@")[0];
-
+          
           // Verificar se o grupo já existe no banco
           let contact = await db.getContactByNumber(ctx.user.workspaceId, groupNumber);
-
+          
           if (!contact) {
             // Criar novo contato para o grupo
             const contactId = await db.createContact({
@@ -2007,24 +1998,24 @@ export const appRouter = router({
               participants: group.participants,
               participantCount: group.participants.length,
             }));
-
+            
             // Atualizar nome se mudou
             if (contact.name !== group.subject && group.subject) {
               await db.updateContactName(contact.id, group.subject);
             }
-
+            
             // Atualizar foto se mudou
             if (group.profilePicUrl && contact.profilePicUrl !== group.profilePicUrl) {
               await db.updateContactProfilePic(contact.id, group.profilePicUrl);
             }
-
+            
             updated++;
             console.log(`[Groups] Updated group: ${group.subject} (${groupNumber})`);
           }
         }
 
         console.log(`[Groups] Sync completed: ${created} created, ${updated} updated`);
-
+        
         return {
           success: true,
           created,
@@ -2071,7 +2062,7 @@ export const appRouter = router({
         if (connectedInstance?.instanceKey && metadata.whatsappJid) {
           try {
             const freshMetadata = await fetchGroupMetadata(connectedInstance.instanceKey, metadata.whatsappJid);
-
+            
             if (freshMetadata) {
               // Atualizar no banco
               await db.updateContactMetadata(contact.id, (m: any = {}) => ({
@@ -2093,7 +2084,7 @@ export const appRouter = router({
                 freshMetadata.participants.map(async (p) => {
                   const participantNumber = p.id.split("@")[0];
                   const participantContact = await db.getContactByNumber(ctx.user.workspaceId!, participantNumber);
-
+                  
                   return {
                     ...p,
                     number: participantNumber,
