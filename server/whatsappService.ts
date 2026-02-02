@@ -110,73 +110,89 @@ const logger = pino({ level: "silent" }); // Use "info" ou "debug" para ver logs
 setInterval(async () => {
   try {
     const instances = Array.from(activeSockets.keys());
-    if (instances.length === 0) return;
-
-    // Assumindo workspace 1 por conveniência ou iterar todos se possível. 
-    // Como não temos acesso fácil ao workspaceId pela key, vamos iterar instâncias conhecidas do DB.
-    // Melhor: iterar pelos contatos do banco que parecem ruins e tentar corrigir com QUALQUER socket conectado.
-
-    // Vamos pegar o primeiro socket conectado para usar como "resolvedor"
-    const anySocket = activeSockets.values().next().value;
-    if (!anySocket) return;
-
-    const dbInstance = await db.getWhatsappInstanceByKey(instances[0]); // Tenta pegar contexto
-    if (!dbInstance) return;
-
-    const allContacts = await db.getContactsByWorkspace(dbInstance.workspaceId);
-    const suspicious = allContacts.filter(c => c.whatsappNumber.length >= 14 && !c.whatsappNumber.includes("-"));
-    const missingPic = allContacts.filter(c => !c.profilePicUrl && c.whatsappNumber.length < 14 && !c.whatsappNumber.includes("-")); // Contatos normais sem foto
-
-    // Corrigir contatos sem foto (normais)
-    if (missingPic.length > 0) {
-      for (const c of missingPic) {
-        const jid = c.whatsappNumber.includes("@") ? c.whatsappNumber : `${c.whatsappNumber}@s.whatsapp.net`;
-        fetchAndSaveProfilePic(anySocket, jid, c.id);
-      }
+    if (instances.length === 0) {
+      console.log("[AutoFix] No active sockets, skipping sync");
+      return;
     }
 
-    if (suspicious.length > 0) {
-      console.log(`[AutoFix] Found ${suspicious.length} suspicious LIDs. Attempting resolution...`);
+    console.log(`[AutoFix] Starting sync cycle with ${instances.length} active instances`);
 
-      for (const c of suspicious) {
-        // LID original pode estar no whatsappNumber ou no metadata.whatsappLid
-        const lid = (c.metadata as any)?.whatsappLid ||
-          (c.whatsappNumber.includes("@lid") ? c.whatsappNumber : `${c.whatsappNumber}@lid`);
+    // Iterar por todas as instâncias ativas
+    for (const instanceKey of instances) {
+      try {
+        const anySocket = activeSockets.get(instanceKey);
+        if (!anySocket) continue;
 
-        console.log(`[AutoFix] Processing suspicious contact ${c.id} (${c.whatsappNumber}). Target LID: ${lid}`);
-        try {
-          const resolvedNumber = await resolveLidSync(instances[0], c.whatsappNumber, lid);
-
-          if (resolvedNumber && resolvedNumber !== c.whatsappNumber) {
-            console.log(`[AutoFix] SUCCESS: Resolved ${c.whatsappNumber} -> ${resolvedNumber}`);
-
-            await db.updateContactWhatsappNumber(c.id, resolvedNumber);
-            if (c.name === c.whatsappNumber) {
-              await db.updateContactName(c.id, resolvedNumber);
-            }
-
-            // Atualizar metadata com o número real também
-            await db.updateContactMetadata(c.id, (m: any = {}) => ({
-              ...m,
-              whatsappJid: `${resolvedNumber}@s.whatsapp.net`,
-              whatsappLid: lid
-            }));
-
-            // Buscar foto de perfil já que resolvemos o número
-            fetchAndSaveProfilePic(anySocket, `${resolvedNumber}@s.whatsapp.net`, c.id);
-          } else {
-            console.log(`[AutoFix] Could not resolve ${lid} to Phone yet. Trying profile pic for LID directly...`);
-            // Fallback: tentar buscar foto do LID mesmo se não resolver o número
-            fetchAndSaveProfilePic(anySocket, lid, c.id);
-          }
-        } catch (err) {
-          console.error(`[AutoFix] Failed to resolve ${c.whatsappNumber}:`, err);
+        const dbInstance = await db.getWhatsappInstanceByKey(instanceKey);
+        if (!dbInstance) {
+          console.log(`[AutoFix] No DB instance found for key: ${instanceKey}`);
+          continue;
         }
+
+        console.log(`[AutoFix] Processing workspace ${dbInstance.workspaceId} with instance ${instanceKey}`);
+
+        const allContacts = await db.getContactsByWorkspace(dbInstance.workspaceId);
+        const suspicious = allContacts.filter(c => c.whatsappNumber.length >= 14 && !c.whatsappNumber.includes("-"));
+        const missingPic = allContacts.filter(c => !c.profilePicUrl && c.whatsappNumber.length < 14 && !c.whatsappNumber.includes("-")); // Contatos normais sem foto
+
+        console.log(`[AutoFix] Workspace ${dbInstance.workspaceId}: ${allContacts.length} total, ${suspicious.length} suspicious LIDs, ${missingPic.length} missing pics`);
+
+        // Corrigir contatos sem foto (normais)
+        if (missingPic.length > 0) {
+          console.log(`[AutoFix] Fetching ${missingPic.length} missing profile pictures...`);
+          for (const c of missingPic) {
+            const jid = c.whatsappNumber.includes("@") ? c.whatsappNumber : `${c.whatsappNumber}@s.whatsapp.net`;
+            await fetchAndSaveProfilePic(anySocket, jid, c.id);
+          }
+        }
+
+        if (suspicious.length > 0) {
+          console.log(`[AutoFix] Found ${suspicious.length} suspicious LIDs. Attempting resolution...`);
+
+          for (const c of suspicious) {
+            // LID original pode estar no whatsappNumber ou no metadata.whatsappLid
+            const lid = (c.metadata as any)?.whatsappLid ||
+              (c.whatsappNumber.includes("@lid") ? c.whatsappNumber : `${c.whatsappNumber}@lid`);
+
+            console.log(`[AutoFix] Processing suspicious contact ${c.id} (${c.whatsappNumber}). Target LID: ${lid}`);
+            try {
+              const resolvedNumber = await resolveLidSync(instanceKey, c.whatsappNumber, lid);
+
+              if (resolvedNumber && resolvedNumber !== c.whatsappNumber) {
+                console.log(`[AutoFix] SUCCESS: Resolved ${c.whatsappNumber} -> ${resolvedNumber}`);
+
+                await db.updateContactWhatsappNumber(c.id, resolvedNumber);
+                if (c.name === c.whatsappNumber) {
+                  await db.updateContactName(c.id, resolvedNumber);
+                }
+
+                // Atualizar metadata com o número real também
+                await db.updateContactMetadata(c.id, (m: any = {}) => ({
+                  ...m,
+                  whatsappJid: `${resolvedNumber}@s.whatsapp.net`,
+                  whatsappLid: lid
+                }));
+
+                // Buscar foto de perfil já que resolvemos o número
+                await fetchAndSaveProfilePic(anySocket, `${resolvedNumber}@s.whatsapp.net`, c.id);
+              } else {
+                console.log(`[AutoFix] Could not resolve ${lid} to Phone yet. Trying profile pic for LID directly...`);
+                // Fallback: tentar buscar foto do LID mesmo se não resolver o número
+                await fetchAndSaveProfilePic(anySocket, lid, c.id);
+              }
+            } catch (err) {
+              console.error(`[AutoFix] Failed to resolve contact ${c.id} (${c.whatsappNumber}):`, err);
+            }
+          }
+        }
+      } catch (instanceErr) {
+        console.error(`[AutoFix] Error processing instance ${instanceKey}:`, instanceErr);
       }
     }
 
+    console.log("[AutoFix] Sync cycle completed");
   } catch (err) {
-    console.error("[AutoFix] Error in loop:", err);
+    console.error("[AutoFix] Error in sync loop:", err);
   }
 }, 30000); // 30 segundos
 
