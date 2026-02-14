@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Bot, Send, Power, MessageSquare } from "lucide-react";
+import { Bot, Send, MessageSquare } from "lucide-react";
 
 export default function BotConfig() {
   const { data: config, refetch } = trpc.bot.getConfig.useQuery();
