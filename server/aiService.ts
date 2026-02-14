@@ -778,7 +778,7 @@ export async function processIncomingMessage(
       console.log(`[AI Service] ⚠️ GRUPO DETECTADO (${whatsappNumber}). IA NÃO IRÁ PROCESSAR.`);
       return;
     }
-    
+
     // Verificar também pelo contato
     const contacts = await db.getContactsByWorkspace(workspaceId);
     const contact = contacts.find(c => c.id === contactId);
@@ -813,7 +813,30 @@ export async function processIncomingMessage(
       throw new Error("Failed to create or find conversation");
     }
 
-    // Processar mídia se houver
+    // ====== CHECK: IA desativada globalmente? ======
+    // Se a IA está desativada, apenas salvar a mensagem do contato (para o Inbox)
+    // e NÃO processar com IA. Isso permite usar o sistema como gerenciador de conversas.
+    const botConfigCheck = await db.getBotConfigByWorkspace(workspaceId);
+    if (botConfigCheck && botConfigCheck.isActive === false) {
+      console.log(`[AI Service] ⚠️ IA DESATIVADA globalmente para workspace ${workspaceId}. Salvando mensagem mas NÃO respondendo.`);
+
+      // Salvar mensagem do contato para que apareça no Inbox
+      try {
+        await db.createMessage({
+          conversationId: activeConv.id,
+          senderType: "contact",
+          content: messageContent,
+          messageType: mediaType || "text",
+          mediaUrl: mediaUrl,
+        });
+        console.log(`[AI Service] Mensagem do contato salva (IA desativada)`);
+      } catch (error: any) {
+        console.error(`[AI Service] Erro ao salvar mensagem com IA desativada:`, error);
+      }
+
+      return; // Não processar com IA
+    }
+
     let processedContent = messageContent;
     let resolvedMediaUrl = mediaUrl;
     let imageKeywordHints: string[] = [];
