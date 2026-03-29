@@ -2,7 +2,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
-import { MessageSquare, Users, PhoneCall, TrendingUp, FileText, Download, Unlock } from "lucide-react";
+import { MessageSquare, Users, PhoneCall, TrendingUp, FileText, Download, Unlock, UserCheck, Archive, ShoppingBag, Clock } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
@@ -15,23 +15,48 @@ export default function Dashboard() {
   const { data: contacts } = trpc.contacts.list.useQuery();
   const { data: conversations } = trpc.conversations.list.useQuery();
   const { data: instances } = trpc.whatsapp.list.useQuery();
-  const { data: ixcStats } = trpc.analytics.ixc.useQuery();
+
+  // Detectar se é provedor (tem IXC configurado)
+  const wsMetadata = (workspace as any)?.metadata || {};
+  const isISP = !!(wsMetadata.ixcApiUrl && wsMetadata.ixcApiToken);
+
+  // Buscar dados IXC apenas se for provedor
+  const { data: ixcStats } = trpc.analytics.ixc.useQuery(undefined, { enabled: isISP });
   const { data: ixcEvents } = trpc.analytics.ixcEvents.useQuery(
-    filterType ? { type: filterType, limit: 50 } : undefined
+    filterType ? { type: filterType, limit: 50 } : undefined,
+    { enabled: isISP && !!filterType }
   );
 
-  const stats = [
+  // Métricas calculadas
+  const waitingContacts = contacts?.filter(c => c.kanbanStatus === "waiting_attendant" || c.kanbanStatus === "new_contact").length || 0;
+  const negotiatingContacts = contacts?.filter(c => c.kanbanStatus === "negotiating").length || 0;
+  const activeConversations = conversations?.filter(c => c.status !== "closed").length || 0;
+
+  // Cards base (aparecem para todos)
+  const baseStats = [
     {
       title: "Total de Contatos",
       value: contacts?.length || 0,
       icon: Users,
-      description: "Leads cadastrados",
+      description: "Cadastrados no sistema",
     },
     {
       title: "Conversas Ativas",
-      value: conversations?.filter(c => c.status !== "closed").length || 0,
+      value: activeConversations,
       icon: MessageSquare,
       description: "Em andamento",
+    },
+    {
+      title: "Aguardando Atendimento",
+      value: waitingContacts,
+      icon: Clock,
+      description: "Novos + Aguardando atendente",
+    },
+    {
+      title: "Em Negociação",
+      value: negotiatingContacts,
+      icon: ShoppingBag,
+      description: "Contatos em negociação",
     },
     {
       title: "Instâncias WhatsApp",
@@ -39,12 +64,10 @@ export default function Dashboard() {
       icon: PhoneCall,
       description: "Conectadas",
     },
-    {
-      title: "Taxa de Conversão",
-      value: "0%",
-      icon: TrendingUp,
-      description: "Últimos 30 dias",
-    },
+  ];
+
+  // Cards específicos de provedor (IXC)
+  const ixcCardStats = isISP ? [
     {
       title: "Consultas IXC",
       value: ixcStats ? `${ixcStats.consulta.success}/${ixcStats.consulta.fail}` : "0/0",
@@ -66,7 +89,9 @@ export default function Dashboard() {
       description: "Sucesso / Falha",
       action: () => { setFilterType("desbloqueio"); setOpen(true); },
     },
-  ];
+  ] : [];
+
+  const stats = [...baseStats, ...ixcCardStats];
 
   return (
     <WorkspaceGuard>
@@ -83,7 +108,7 @@ export default function Dashboard() {
           {stats.map((stat) => {
             const Icon = stat.icon;
             return (
-              <Card key={stat.title} className="cursor-pointer" onClick={stat.action}>
+              <Card key={stat.title} className="cursor-pointer" onClick={(stat as any).action}>
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                   <CardTitle className="text-sm font-medium">
                     {stat.title}
@@ -137,75 +162,84 @@ export default function Dashboard() {
                   <span className="text-sm">Bot IA</span>
                   <span className="text-sm text-muted-foreground">✓ Ativo</span>
                 </div>
+                {isISP && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm">IXC Soft</span>
+                    <span className="text-sm text-muted-foreground">✓ Configurado</span>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
         </div>
 
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogContent className="max-w-3xl">
-            <DialogHeader>
-              <DialogTitle>
-                {filterType === "boleto"
-                  ? "Boletos enviados"
-                  : filterType === "desbloqueio"
-                  ? "Desbloqueios"
-                  : filterType === "consulta"
-                  ? "Consultas IXC"
-                  : "Eventos IXC"}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="space-y-3">
-              {!ixcEvents || ixcEvents.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Nenhum evento registrado.</p>
-              ) : (
-                <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-                  {ixcEvents.map(ev => {
-                    const contact = contacts?.find(c => c.id === ev.contactId);
-                    const contactLabel = contact
-                      ? `${contact.name || "Sem nome"} (${contact.whatsappNumber})`
-                      : ev.contactId
-                      ? `Contato #${ev.contactId}`
-                      : "Contato não identificado";
-                    return (
-                      <Card key={ev.id}>
-                        <CardContent className="py-3">
-                          <div className="flex items-center justify-between">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2">
-                                <Badge variant={ev.status === "success" ? "default" : "destructive"}>
-                                  {ev.type} • {ev.status}
-                                </Badge>
-                                {ev.invoiceId ? <span className="text-xs text-muted-foreground">Fatura: {ev.invoiceId}</span> : null}
-                              </div>
-                              <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
-                                <span>{contactLabel}</span>
-                                {ev.contactId ? (
-                                  <Link
-                                    href={`/inbox?contact=${ev.contactId}`}
-                                    className="text-primary underline"
-                                  >
-                                    Ver conversa
-                                  </Link>
+        {/* Dialog de eventos IXC - só aparece para provedor */}
+        {isISP && (
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogContent className="max-w-3xl">
+              <DialogHeader>
+                <DialogTitle>
+                  {filterType === "boleto"
+                    ? "Boletos enviados"
+                    : filterType === "desbloqueio"
+                    ? "Desbloqueios"
+                    : filterType === "consulta"
+                    ? "Consultas IXC"
+                    : "Eventos IXC"}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                {!ixcEvents || ixcEvents.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Nenhum evento registrado.</p>
+                ) : (
+                  <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                    {ixcEvents.map(ev => {
+                      const contact = contacts?.find(c => c.id === ev.contactId);
+                      const contactLabel = contact
+                        ? `${contact.name || "Sem nome"} (${contact.whatsappNumber})`
+                        : ev.contactId
+                        ? `Contato #${ev.contactId}`
+                        : "Contato não identificado";
+                      return (
+                        <Card key={ev.id}>
+                          <CardContent className="py-3">
+                            <div className="flex items-center justify-between">
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <Badge variant={ev.status === "success" ? "default" : "destructive"}>
+                                    {ev.type} • {ev.status}
+                                  </Badge>
+                                  {ev.invoiceId ? <span className="text-xs text-muted-foreground">Fatura: {ev.invoiceId}</span> : null}
+                                </div>
+                                <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
+                                  <span>{contactLabel}</span>
+                                  {ev.contactId ? (
+                                    <Link
+                                      href={`/inbox?contact=${ev.contactId}`}
+                                      className="text-primary underline"
+                                    >
+                                      Ver conversa
+                                    </Link>
+                                  ) : null}
+                                </div>
+                                {ev.message ? (
+                                  <p className="text-sm">{ev.message}</p>
                                 ) : null}
                               </div>
-                              {ev.message ? (
-                                <p className="text-sm">{ev.message}</p>
-                              ) : null}
+                              <div className="text-xs text-muted-foreground text-right">
+                                {new Date((ev.createdAt || 0) * 1000).toLocaleString("pt-BR")}
+                              </div>
                             </div>
-                            <div className="text-xs text-muted-foreground text-right">
-                              {new Date((ev.createdAt || 0) * 1000).toLocaleString("pt-BR")}
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </DialogContent>
-        </Dialog>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
 
       </div>
     </DashboardLayout>

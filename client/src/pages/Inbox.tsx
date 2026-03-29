@@ -22,6 +22,7 @@ export default function Inbox() {
     refetchInterval: 30000,
     refetchOnWindowFocus: false,
   });
+  const { data: workspace } = trpc.workspaces.current.useQuery();
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const { data: messages, refetch: refetchMessages } = trpc.messages.list.useQuery(
     { conversationId: selectedConversationId! },
@@ -55,6 +56,13 @@ export default function Inbox() {
   const sendMessage = trpc.messages.send.useMutation();
   const assignConversation = trpc.conversations.assign.useMutation();
   const closeConversation = trpc.conversations.close.useMutation();
+  const deleteMessageMutation = trpc.messages.deleteForEveryone.useMutation({
+    onSuccess: () => {
+      refetchMessages();
+      toast.success("Mensagem apagada com sucesso");
+    },
+    onError: () => toast.error("Falha ao apagar mensagem"),
+  });
   
   const [messageText, setMessageText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -144,9 +152,18 @@ export default function Inbox() {
     if (!messageText.trim() || !selectedConversationId) return;
 
     try {
+      const activeConv = conversations?.find(c => c.id === selectedConversationId);
+      const activeContact = contacts?.find(c => c.id === activeConv?.contactId);
+      const sellerColumns = Array.isArray((workspace?.metadata as any)?.kanbanSellerColumns)
+          ? (workspace?.metadata as any).kanbanSellerColumns
+          : [];
+      const activeSellerCol = sellerColumns.find((col: any) => col.id === activeContact?.kanbanStatus);
+      const attendantName = activeSellerCol?.name || workspace?.name || "Atendimento";
+
+      const finalMessage = attendantName ? `*${attendantName}*:\n${messageText}` : messageText;
       await sendMessage.mutateAsync({
         conversationId: selectedConversationId,
-        content: messageText,
+        content: finalMessage,
       });
       setMessageText("");
       refetchMessages();

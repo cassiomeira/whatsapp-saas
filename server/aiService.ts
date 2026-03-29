@@ -10,16 +10,40 @@ const SEARCH_RESULTS_PER_VARIANT = 1000;
 const MAX_UNIQUE_PRODUCTS = 2000;
 const PRODUCTS_TO_PRESENT = 20;
 const SAO_PAULO_TIMEZONE = "America/Sao_Paulo";
-const WEEKDAY_OPERATING_MINUTES = {
+
+// Defaults - usados quando workspace não tem operatingHours configurado
+const DEFAULT_WEEKDAY_OPERATING_MINUTES = {
   start: 7 * 60 + 30,
   end: 20 * 60,
 };
-const SUNDAY_OPERATING_MINUTES = {
+const DEFAULT_SUNDAY_OPERATING_MINUTES = {
   start: 8 * 60,
   end: 20 * 60,
 };
-const OUT_OF_HOURS_MESSAGE =
-  "No momento estamos fora do nosso horário de atendimento. Funcionamos de segunda a sábado das 07h30 às 20h00 e aos domingos e feriados das 08h00 às 20h00. Assim que retomarmos o expediente, um atendente dará continuidade ao seu atendimento. 😊";
+const DEFAULT_OUT_OF_HOURS_MESSAGE =
+  "No momento estamos fora do nosso horário de atendimento. Assim que retomarmos o expediente, um atendente dará continuidade ao seu atendimento. 😊";
+
+/**
+ * Busca config de horário do workspace. Se não configurado, retorna defaults.
+ */
+function getOperatingHoursConfig(workspaceMetadata: any) {
+  const oh = workspaceMetadata?.operatingHours;
+  if (!oh || !oh.enabled) {
+    return { enabled: false, weekday: DEFAULT_WEEKDAY_OPERATING_MINUTES, sunday: DEFAULT_SUNDAY_OPERATING_MINUTES, message: DEFAULT_OUT_OF_HOURS_MESSAGE };
+  }
+  return {
+    enabled: true,
+    weekday: {
+      start: (oh.weekdayOpenHour ?? 7) * 60 + (oh.weekdayOpenMinute ?? 30),
+      end: (oh.weekdayCloseHour ?? 20) * 60 + (oh.weekdayCloseMinute ?? 0),
+    },
+    sunday: {
+      start: (oh.sundayOpenHour ?? 8) * 60 + (oh.sundayOpenMinute ?? 0),
+      end: (oh.sundayCloseHour ?? 20) * 60 + (oh.sundayCloseMinute ?? 0),
+    },
+    message: oh.outOfHoursMessage || DEFAULT_OUT_OF_HOURS_MESSAGE,
+  };
+}
 
 const STOP_WORDS = new Set([
   "a",
@@ -201,17 +225,20 @@ function getCurrentTimeInfo(date = new Date()) {
   return { weekday, hour, minute, totalMinutes: hour * 60 + minute };
 }
 
-function isWithinBusinessHours(date = new Date()) {
+function isWithinBusinessHours(workspaceMetadata?: any, date = new Date()) {
+  const config = getOperatingHoursConfig(workspaceMetadata);
   const info = getCurrentTimeInfo(date);
   const window =
     info.weekday === "sun"
-      ? SUNDAY_OPERATING_MINUTES
-      : WEEKDAY_OPERATING_MINUTES;
+      ? config.sunday
+      : config.weekday;
   const isOpen =
     info.totalMinutes >= window.start && info.totalMinutes <= window.end;
   return {
     isOpen,
     info,
+    enabled: config.enabled,
+    message: config.message,
   };
 }
 
@@ -594,7 +621,7 @@ export async function generateBotResponse(
     // Construir contexto da conversa
     const conversationHistory = messages.slice(-10).map(msg => ({
       role: msg.senderType === "contact" ? "user" as const : "assistant" as const,
-      content: msg.content,
+      content: msg.content ? msg.content.replace(/^\*.*?\*:\s*\n?/, "") : "",
     }));
 
     // Chamar a IA (com vision se houver imagem)
@@ -620,10 +647,12 @@ export async function generateBotResponse(
     }
 
     systemPrompt += `
-Regras de catálogo:
-- Sempre que apresentar um produto, informe o preço exatamente como fornecido na lista e destaque que o item está disponível para pronta entrega.
-- Quando o cliente pedir um produto específico e ele existir na lista, priorize esse item e confirme o valor.
-- Caso não encontre o produto solicitado ou não tenha certeza do estoque, não diga que “não temos”; diga que vai transferir para um atendente humano confirmar a disponibilidade e finalize a resposta com esse aviso (sem perguntar ao cliente se ele deseja ser transferido).`;
+CRÍTICO: REGRAS DE INFORMAÇÕES E PRODUTOS:
+1. VOCÊ É ESTRITAMENTE LIMITADO às informações contidas no seu treinamento (prompt acima) e na lista de produtos/planos fornecida.
+2. NUNCA INVENTE, CRIE OU SUPONHA planos, produtos, valores, velocidades ou serviços que não estejam explicitamente informados a você.
+3. Se o cliente perguntar sobre planos/produtos e você não tiver essa informação exata no seu treinamento ou contexto, diga APENAS: "Vou transferir você para um atendente humano que pode te passar todos os detalhes corretos. Um momento, por favor."
+4. NUNCA diga frases genéricas inventando planos fictícios como "Temos o plano Poderoso, Voador, Águia, Gigante, etc" a menos que isso faça parte EXATA do seu treinamento.
+5. Em caso de dúvida, NÃO INVENTE. Transfira para um atendente humano.`;
 
     const additionalSystemMessages: Array<{ role: "system"; content: string }> = [];
 
@@ -1072,30 +1101,32 @@ export async function processIncomingMessage(
     if (activeConv.status === "bot_handling") {
       console.log(`[AI Service] Status é bot_handling - VAI PROCESSAR COM IA`);
 
-      // Verificação de horário de atendimento desabilitada para testes
-      // const { isOpen } = isWithinBusinessHours();
-      // if (!isOpen) {
-      //   console.log("[AI Service] Fora do horário de atendimento. Enviando mensagem automática.");
-      //   await db.createMessage({
-      //     conversationId: activeConv.id,
-      //     senderType: "bot",
-      //     content: OUT_OF_HOURS_MESSAGE,
-      //   });
-      //
-      //   try {
-      //     const { sendTextMessage } = await import("./whatsappService");
-      //     const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
-      //     const instance = instances.find(i => i.id === instanceId);
-      //     if (instance && instance.instanceKey) {
-      //       await sendTextMessage(instance.instanceKey, destinationNumber, OUT_OF_HOURS_MESSAGE);
-      //       console.log(`[AI Service] Mensagem de horário de atendimento enviada para ${destinationNumber}`);
-      //     }
-      //   } catch (error) {
-      //     console.error("[AI Service] Erro ao enviar mensagem de horário de atendimento:", error);
-      //   }
-      //
-      //   return;
-      // }
+      // Verificação de horário de atendimento (configurável por workspace)
+      const wsForHours = await db.getWorkspaceById(workspaceId);
+      const wsMetadataForHours = wsForHours?.metadata as any;
+      const { isOpen, enabled: hoursEnabled, message: outOfHoursMsg } = isWithinBusinessHours(wsMetadataForHours);
+      if (hoursEnabled && !isOpen) {
+        console.log("[AI Service] Fora do horário de atendimento. Enviando mensagem automática.");
+        await db.createMessage({
+          conversationId: activeConv.id,
+          senderType: "bot",
+          content: outOfHoursMsg,
+        });
+
+        try {
+          const { sendTextMessage } = await import("./whatsappService");
+          const instances = await db.getWhatsappInstancesByWorkspace(workspaceId);
+          const instance = instances.find(i => i.id === instanceId);
+          if (instance && instance.instanceKey) {
+            await sendTextMessage(instance.instanceKey, destinationNumber, outOfHoursMsg);
+            console.log(`[AI Service] Mensagem de horário de atendimento enviada para ${destinationNumber}`);
+          }
+        } catch (error) {
+          console.error("[AI Service] Erro ao enviar mensagem de horário de atendimento:", error);
+        }
+
+        return;
+      }
 
       // FLUXO ROBOTIZADO: Processar PRIMEIRO (antes de tudo)
       // Isso garante que a saudação inicial apareça antes da IA processar

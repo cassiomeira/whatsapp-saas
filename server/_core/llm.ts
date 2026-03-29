@@ -329,26 +329,40 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.response_format = normalizedResponseFormat;
   }
 
-  console.log("[LLM] Enviando requisição para API...");
-  const response = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  console.log("[LLM] Enviando requisição para API com timeout de 30s...");
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-  console.log("[LLM] Resposta recebida. Status:", response.status);
+  try {
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ENV.forgeApiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("[LLM] Erro da API:", errorText);
-    throw new Error(
-      `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
-    );
+    clearTimeout(timeoutId);
+
+    console.log("[LLM] Resposta recebida. Status:", response.status);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("[LLM] Erro da API:", errorText);
+      throw new Error(
+        `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
+      );
+    }
+
+    console.log("[LLM] Resposta OK, parseando JSON...");
+    return (await response.json()) as InvokeResult;
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      console.error("[LLM] Requisição cancelada por timeout após 30 segundos.");
+      throw new Error("LLM invoke failed: Request Timeout (30000ms)");
+    }
+    throw error;
   }
-
-  console.log("[LLM] Resposta OK, parseando JSON...");
-  return (await response.json()) as InvokeResult;
 }

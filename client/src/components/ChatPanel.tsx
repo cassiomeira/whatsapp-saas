@@ -10,6 +10,7 @@ import { fetchFile, toBlobURL } from "@ffmpeg/util";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 interface ChatPanelProps {
     contactId: number;
@@ -18,6 +19,7 @@ interface ChatPanelProps {
 }
 
 export default function ChatPanel({ contactId, handleImagePreview, hideHeader = false }: ChatPanelProps) {
+    const { user } = useAuth();
     const [message, setMessage] = useState("");
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [filePreview, setFilePreview] = useState<string | null>(null);
@@ -50,6 +52,7 @@ export default function ChatPanel({ contactId, handleImagePreview, hideHeader = 
 
     const { data: contacts } = trpc.contacts.list.useQuery();
     const { data: groups } = trpc.groups.list.useQuery();
+    const { data: workspace } = trpc.workspaces.current.useQuery();
 
     const startConversation = trpc.contacts.startConversation.useMutation();
 
@@ -186,7 +189,7 @@ export default function ChatPanel({ contactId, handleImagePreview, hideHeader = 
             await ffmpeg.deleteFile(inputName);
             await ffmpeg.deleteFile(outputName);
 
-            return new Blob([data], { type: "audio/ogg" });
+            return new Blob([data as any], { type: "audio/ogg" });
         } catch (error) {
             console.error("Conversion error:", error);
             return null;
@@ -272,10 +275,27 @@ export default function ChatPanel({ contactId, handleImagePreview, hideHeader = 
                 });
             }
 
+            let finalCaption = caption;
+            
+            const activeContact = contacts?.find((c) => c.id === contactId);
+            const sellerColumns = Array.isArray((workspace?.metadata as any)?.kanbanSellerColumns)
+                ? (workspace?.metadata as any).kanbanSellerColumns
+                : [];
+            const activeSellerCol = sellerColumns.find((col: any) => col.id === activeContact?.kanbanStatus);
+            const attendantName = activeSellerCol?.name || workspace?.name || "Atendimento";
+
+            if (attendantName) {
+                if (finalCaption) {
+                    finalCaption = `*${attendantName}*:\n${finalCaption}`;
+                } else if (selectedFile) {
+                    finalCaption = `*${attendantName}* enviou um anexo`;
+                }
+            }
+
             const msgPayload: any = {
                 conversationId: conversation.id,
-                content: caption || undefined,
-                caption: caption || undefined,
+                content: finalCaption || undefined,
+                caption: finalCaption || undefined,
             };
 
             if (mediaUrl && mediaType) {
