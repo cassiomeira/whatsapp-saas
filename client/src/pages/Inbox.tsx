@@ -154,11 +154,30 @@ export default function Inbox() {
     try {
       const activeConv = conversations?.find(c => c.id === selectedConversationId);
       const activeContact = contacts?.find(c => c.id === activeConv?.contactId);
-      const sellerColumns = Array.isArray((workspace?.metadata as any)?.kanbanSellerColumns)
-          ? (workspace?.metadata as any).kanbanSellerColumns
-          : [];
+
+      let sellerColumns: any[] = [];
+      try {
+          const meta = typeof workspace?.metadata === "string" 
+              ? JSON.parse(workspace.metadata) 
+              : workspace?.metadata;
+          sellerColumns = Array.isArray(meta?.kanbanSellerColumns) ? meta.kanbanSellerColumns : [];
+      } catch (e) {
+          sellerColumns = [];
+      }
+      
       const activeSellerCol = sellerColumns.find((col: any) => col.id === activeContact?.kanbanStatus);
-      const attendantName = activeSellerCol?.name || workspace?.name || "Atendimento";
+      
+      let attendantName = activeSellerCol?.name;
+      if (!attendantName && activeContact?.kanbanStatus) {
+          const defaultCols: Record<string, string> = {
+              "new_contact": "Novo Contato",
+              "waiting_attendant": "Aguardando Atendente",
+              "negotiating": "Negociando",
+              "collaborators_fixed": "Colaboradores"
+          };
+          attendantName = defaultCols[activeContact.kanbanStatus];
+      }
+      if (!attendantName) attendantName = workspace?.name || "Atendimento";
 
       const finalMessage = attendantName ? `*${attendantName}*:\n${messageText}` : messageText;
       await sendMessage.mutateAsync({
