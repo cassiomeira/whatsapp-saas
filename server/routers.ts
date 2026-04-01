@@ -4,7 +4,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
-import { getWorkspaceIxcMetrics, getIxcEvents, getContactStatusEvents, getContactSla, deleteContactFully, deleteAllContacts, createContact, getContactByNumber, normalizePhone } from "./db";
+import { getWorkspaceIxcMetrics, getIxcEvents, getContactStatusEvents, getContactSla, deleteContactFully, deleteAllContacts, deleteContactsByStatus, createContact, getContactByNumber, normalizePhone } from "./db";
 import { processIncomingMessage } from "./aiService";
 
 import { TRPCError } from "@trpc/server";
@@ -517,6 +517,16 @@ export const appRouter = router({
         }
         await deleteAllContacts(ctx.user.workspaceId);
         return { success: true };
+      }),
+
+    deleteByStatus: protectedProcedure
+      .input(z.object({ kanbanStatus: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.workspaceId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No workspace" });
+        }
+        const deleted = await deleteContactsByStatus(ctx.user.workspaceId, input.kanbanStatus);
+        return { success: true, deleted };
       }),
 
     // Atualizar status do Kanban

@@ -821,6 +821,33 @@ export async function deleteAllContacts(workspaceId: number) {
   await db.delete(contacts).where(eq(contacts.workspaceId, workspaceId));
 }
 
+export async function deleteContactsByStatus(workspaceId: number, kanbanStatus: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Get all contacts in this column/status
+  const columnContacts = await db
+    .select()
+    .from(contacts)
+    .where(and(eq(contacts.workspaceId, workspaceId), eq(contacts.kanbanStatus, kanbanStatus)));
+
+  for (const contact of columnContacts) {
+    const convs = await db
+      .select()
+      .from(conversations)
+      .where(and(eq(conversations.workspaceId, workspaceId), eq(conversations.contactId, contact.id)));
+
+    for (const conv of convs) {
+      await db.delete(messages).where(eq(messages.conversationId, conv.id));
+      await db.delete(conversations).where(eq(conversations.id, conv.id));
+    }
+
+    await db.delete(contacts).where(and(eq(contacts.workspaceId, workspaceId), eq(contacts.id, contact.id)));
+  }
+
+  return columnContacts.length;
+}
+
 export async function updateContactKanbanStatus(id: number, status: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");

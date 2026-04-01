@@ -19,7 +19,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus, Paperclip, Mic, StopCircle, Camera, Smile } from "lucide-react";
+import { Phone, X, Send, Maximize2, Plus, Trash2, Pencil, Archive, MessageSquarePlus, Paperclip, Mic, StopCircle, Camera, Smile, AlertTriangle } from "lucide-react";
 import CameraCapture from "@/components/CameraCapture";
 import ChatPanel from "@/components/ChatPanel"; // Import new component
 import { Button } from "@/components/ui/button";
@@ -205,6 +205,7 @@ function DroppableColumn({
   allColumns,
   onMoveContact,
   onDeleteSellerColumn,
+  onClearColumn,
   handleImagePreview
 }: {
   column: KanbanColumn;
@@ -214,6 +215,7 @@ function DroppableColumn({
   allColumns: KanbanColumn[];
   onMoveContact: (contactId: number, status: string) => void;
   onDeleteSellerColumn?: (columnId: string) => void;
+  onClearColumn: (column: KanbanColumn) => void;
   handleImagePreview: (url: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
@@ -236,16 +238,30 @@ function DroppableColumn({
             <div className={`w-3 h-3 rounded-full ${column.color}`} />
             <CardTitle className="text-base">{column.title}</CardTitle>
           </div>
-          {column.isSeller && onDeleteSellerColumn && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-red-500 hover:text-red-600"
-              onClick={() => onDeleteSellerColumn(column.id)}
-            >
-              <Trash2 className="w-4 h-4" />
-            </Button>
-          )}
+          <div className="flex items-center gap-1">
+            {contacts.length > 0 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-orange-500 hover:text-orange-600 hover:bg-orange-50"
+                title={`Limpar coluna ${column.title}`}
+                onClick={() => onClearColumn(column)}
+              >
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            )}
+            {column.isSeller && onDeleteSellerColumn && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-red-500 hover:text-red-600"
+                title="Remover coluna"
+                onClick={() => onDeleteSellerColumn(column.id)}
+              >
+                <X className="w-3 h-3" />
+              </Button>
+            )}
+          </div>
         </div>
         <p className="text-xs text-muted-foreground mt-1">
           {contacts.length} {contacts.length === 1 ? "contato" : "contatos"}
@@ -285,6 +301,8 @@ export default function Kanban() {
   const [newConversationNumber, setNewConversationNumber] = useState("");
   const [newConversationName, setNewConversationName] = useState("");
   const [isStartingConversation, setIsStartingConversation] = useState(false);
+  const [confirmClear, setConfirmClear] = useState<{ type: "column"; column: KanbanColumn } | { type: "all" } | null>(null);
+  const [confirmText, setConfirmText] = useState("");
 
   const { data: workspace, refetch: refetchWorkspace } = trpc.workspaces.current.useQuery();
   const { data: contacts, refetch } = trpc.contacts.list.useQuery(undefined, {
@@ -292,6 +310,40 @@ export default function Kanban() {
     refetchOnWindowFocus: true,
   });
   const startConversationMutation = trpc.contacts.startConversation.useMutation();
+  const deleteByStatusMutation = trpc.contacts.deleteByStatus.useMutation();
+  const deleteAllContactsMutation = trpc.contacts.deleteAll.useMutation();
+
+  const handleClearColumn = (column: KanbanColumn) => {
+    setConfirmClear({ type: "column", column });
+    setConfirmText("");
+  };
+
+  const handleClearAll = () => {
+    setConfirmClear({ type: "all" });
+    setConfirmText("");
+  };
+
+  const executeClear = async () => {
+    if (!confirmClear) return;
+    try {
+      if (confirmClear.type === "column") {
+        const result = await deleteByStatusMutation.mutateAsync({ kanbanStatus: confirmClear.column.id });
+        toast.success(`${result.deleted} contato(s) removido(s) da coluna "${confirmClear.column.title}"`);
+      } else {
+        await deleteAllContactsMutation.mutateAsync();
+        toast.success("Todos os contatos foram removidos!");
+      }
+      setConfirmClear(null);
+      setConfirmText("");
+      await Promise.all([refetch(), refetchWorkspace()]);
+    } catch (error) {
+      console.error(error);
+      toast.error("Erro ao limpar contatos");
+    }
+  };
+
+  const confirmRequired = confirmClear?.type === "all" ? "LIMPAR TUDO" : (confirmClear?.type === "column" ? `LIMPAR ${(confirmClear.column.title).toUpperCase()}` : "");
+  const canConfirm = confirmText.trim().toUpperCase() === confirmRequired;
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -593,6 +645,14 @@ export default function Kanban() {
                 <Plus className="w-4 h-4 mr-2" />
                 Novo vendedor
               </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleClearAll}
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Limpar tudo
+              </Button>
             </div>
           </div>
 
@@ -627,6 +687,7 @@ export default function Kanban() {
                       onDeleteSellerColumn={
                         column.isSeller ? () => handleDeleteSellerColumn(column.id) : undefined
                       }
+                      onClearColumn={handleClearColumn}
                       handleImagePreview={setPreviewImageUrl}
                     />
                   </div>
@@ -712,6 +773,45 @@ export default function Kanban() {
             <ChatPanel contactId={selectedContact.id} handleImagePreview={setPreviewImageUrl} />
           </div>
         )}
+
+        {/* Dialog de Confirmação de Limpeza */}
+        <Dialog open={!!confirmClear} onOpenChange={(open) => { if (!open) { setConfirmClear(null); setConfirmText(""); } }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="w-5 h-5" />
+                {confirmClear?.type === "all" ? "Limpar todos os contatos" : `Limpar coluna "${confirmClear?.type === "column" ? confirmClear.column.title : ""}"` }
+              </DialogTitle>
+              <DialogDescription>
+                {confirmClear?.type === "all"
+                  ? "Esta ação irá remover TODOS os contatos, conversas e mensagens do sistema. Isso é irreversível."
+                  : `Esta ação irá remover todos os contatos e mensagens da coluna "${confirmClear?.type === "column" ? confirmClear.column.title : ""}". Isso é irreversível.`
+                }
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <p className="text-sm font-medium">
+                Para confirmar, digite <span className="font-mono bg-muted px-1 rounded text-destructive">{confirmRequired}</span>:
+              </p>
+              <Input
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder={confirmRequired}
+                className="font-mono"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setConfirmClear(null); setConfirmText(""); }}>Cancelar</Button>
+              <Button
+                variant="destructive"
+                disabled={!canConfirm || deleteByStatusMutation.isPending || deleteAllContactsMutation.isPending}
+                onClick={executeClear}
+              >
+                {(deleteByStatusMutation.isPending || deleteAllContactsMutation.isPending) ? "Limpando..." : "Confirmar Limpeza"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Dialog para Nova Conversa */}
         <Dialog open={newConversationOpen} onOpenChange={setNewConversationOpen}>
