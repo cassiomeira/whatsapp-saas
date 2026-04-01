@@ -319,7 +319,7 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
     // Otimizações para estabilidade
     generateHighQualityLinkPreview: true,
     browser: ["WhatsApp SaaS", "Chrome", "10.0.0"],
-    syncFullHistory: true, // Sincronizar histórico recente (última semana)
+    syncFullHistory: false, // NÃO sincronizar histórico antigo - evita travamento
   });
 
   // Mapa para guardar QR code temporariamente até ser consumido ou expirado
@@ -442,104 +442,13 @@ export async function createWhatsAppInstance(instanceKey: string): Promise<Creat
     }
   });
 
-  // Gerenciamento de Histórico (Backfill de mensagens antigas)
+  // Gerenciamento de Histórico (Backfill desabilitado - evita travamento na conexão)
   sock.ev.on("messaging-history.set", async ({ chats, contacts, messages, isLatest }) => {
-    try {
-      const dbInstance = await db.getWhatsappInstanceByKey(instanceKey);
-      if (!dbInstance) return;
-
-      console.log(`[WhatsApp] History sync received for ${instanceKey}: ${messages.length} messages, ${chats.length} chats, ${contacts.length} contacts`);
-
-      // Filtrar apenas mensagens do último mês (30 dias)
-      const oneMonthAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-      const recentMessages = messages.filter(msg => {
-        const timestamp = (typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp : msg.messageTimestamp?.low || 0) * 1000;
-        return timestamp >= oneMonthAgo;
-      });
-
-      console.log(`[WhatsApp] Filtered to ${recentMessages.length} messages from last 30 days`);
-
-      // Processar mensagens recentes
-      for (const msg of recentMessages) {
-        if (!msg.message) continue;
-
-        const isFromMe = msg.key.fromMe;
-        const remoteJid = msg.key.remoteJid;
-
-        if (!remoteJid || remoteJid === "status@broadcast") continue;
-        
-        // Pular grupos no histórico - mensagens antigas de grupos não são importadas
-        const isGroup = remoteJid.includes("@g.us");
-        if (isGroup) {
-          continue; // Não importar mensagens antigas de grupos
-        }
-
-        let jidUser = remoteJid.split("@")[0];
-        let whatsappNumber = jidUser;
-
-        // Priorizar senderPn 
-        const senderPn = (msg as any).senderPn || (msg.key as any).senderPn;
-        if (senderPn) {
-          whatsappNumber = senderPn.split("@")[0];
-          jidUser = whatsappNumber;
-        }
-
-        const contactName = msg.pushName || whatsappNumber;
-
-        // Buscar/Criar contato
-        let contact = await db.getContactByNumber(dbInstance.workspaceId, whatsappNumber);
-        if (!contact) {
-          const contactId = await db.createContact({
-            workspaceId: dbInstance.workspaceId,
-            whatsappNumber,
-            name: contactName,
-            kanbanStatus: "new_contact",
-            metadata: {
-              whatsappJid: remoteJid,
-              whatsappLid: remoteJid.endsWith("@lid") ? remoteJid : undefined,
-              pushName: msg.pushName
-            }
-          });
-          contact = await db.getContactByNumber(dbInstance.workspaceId, whatsappNumber);
-        }
-
-        if (!contact) continue;
-
-        // Buscar ou criar conversa
-        let conversation = await db.getConversationByContact(dbInstance.workspaceId, contact.id);
-        if (!conversation) {
-          const newConvId = await db.createConversation({
-            contactId: contact.id,
-            instanceId: dbInstance.id,
-            workspaceId: dbInstance.workspaceId,
-            status: 'bot_handling'
-          });
-          conversation = { id: newConvId } as any;
-        }
-
-        // Extrair conteúdo da mensagem
-        const messageType = Object.keys(msg.message)[0];
-        const content = msg.message[messageType as keyof typeof msg.message] as any;
-        const body = content?.text || content?.caption || msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
-
-        // Salvar mensagem
-        await db.createMessage({
-          conversationId: conversation!.id,
-          content: body || "(Mensagem sem texto)",
-          senderType: isFromMe ? "agent" : "contact",
-          sentAt: new Date((typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp : msg.messageTimestamp?.low || 0) * 1000),
-          whatsappMessageId: msg.key.id,
-          messageType: 'text',
-          metadata: {
-            pushName: msg.pushName
-          }
-        });
-      }
-
-      console.log(`[WhatsApp] History sync completed for ${instanceKey}`);
-    } catch (err) {
-      console.error("[WhatsApp] Error in messaging-history.set:", err);
-    }
+    // Importação de histórico desabilitada intencionalmente.
+    // syncFullHistory=false já previne a maioria dos casos, mas este handler
+    // garante que nenhuma mensagem antiga seja gravada no banco mesmo que
+    // o WhatsApp envie um backfill parcial.
+    console.log(`[WhatsApp] History sync event received for ${instanceKey}: ${messages.length} msgs, ${chats.length} chats — ignorado (importação desabilitada).`);
   });
 
   // Gerenciamento de Mensagens
